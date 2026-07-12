@@ -48,6 +48,7 @@ import {
   attachSubagentsInOrder,
   liveSubagents,
   pruneAgentCache,
+  pruneParentNamesCache,
 } from "./collect/subagents.ts";
 import {
   claimLatestTranscript,
@@ -146,6 +147,7 @@ export const __test = {
   agentContext,
   liveSubagents,
   attachSubagentsInOrder,
+  pruneParentNamesCache,
   hostApp,
   cpuPercent,
   effectiveState,
@@ -299,10 +301,12 @@ export async function collectRows(filter: string | null): Promise<Instance[]> {
 
   // drop caches for sessions/sub-agents that left the table; each cache is
   // pruned by its owning module so its lifetime stays where it is defined
-  pruneTranscriptCache(
-    new Set(rows.map((r) => r.transcript).filter((p): p is string => !!p)),
+  const liveTranscripts = new Set(
+    rows.map((r) => r.transcript).filter((p): p is string => !!p),
   );
+  pruneTranscriptCache(liveTranscripts);
   pruneAgentCache(seenAgents);
+  pruneParentNamesCache(liveTranscripts);
 
   return rows
     .filter((r) => matchRow(r, filter))

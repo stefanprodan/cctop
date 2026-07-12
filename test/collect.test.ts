@@ -744,6 +744,210 @@ describe("sub-agent liveness", () => {
       [],
     );
   });
+
+  // A sub-agent's own transcript never carries its name — only the parent's
+  // does, as either a toolUseResult (agentId -> agentType) or an Agent/Task
+  // tool_use block (matched by the prompt it launched the agent with).
+  describe("sub-agent name resolution", () => {
+    test("resolves a name from a toolUseResult agentId", async () => {
+      const transcriptPath = join(dir, "byid.jsonl");
+      const subdir = join(dir, "byid", "subagents");
+      mkdirSync(subdir, { recursive: true });
+      const agentId = "deadbeef01";
+      const agentPath = join(subdir, `agent-${agentId}.jsonl`);
+      writeFileSync(agentPath, jsonl([textTurn("hi")]));
+      const t = new Date(now - 1_000);
+      utimesSync(agentPath, t, t);
+
+      writeFileSync(
+        transcriptPath,
+        jsonl([
+          user([{ type: "tool_result", content: "..." }], {
+            toolUseResult: { agentId, agentType: "code-locator" },
+          }),
+        ]),
+      );
+
+      const agents = await __test.liveSubagents(
+        transcriptPath,
+        now,
+        new Set(),
+        new Set(),
+      );
+      expect(agents[0]?.name).toBe("code-locator");
+    });
+
+    test("leaves the name null when the parent transcript has no info", async () => {
+      const transcriptPath = join(dir, "noinfo.jsonl");
+      const subdir = join(dir, "noinfo", "subagents");
+      mkdirSync(subdir, { recursive: true });
+      const agentPath = join(subdir, "agent-noinfo1.jsonl");
+      writeFileSync(agentPath, jsonl([textTurn("hi")]));
+      const t = new Date(now - 1_000);
+      utimesSync(agentPath, t, t);
+      // no parent transcript written at all
+
+      const agents = await __test.liveSubagents(
+        transcriptPath,
+        now,
+        new Set(),
+        new Set(),
+      );
+      expect(agents[0]?.name).toBeNull();
+    });
+
+    test("caches a resolved name across refreshes without re-scanning the parent", async () => {
+      const transcriptPath = join(dir, "namecache.jsonl");
+      const subdir = join(dir, "namecache", "subagents");
+      mkdirSync(subdir, { recursive: true });
+      const agentId = "cachedid1";
+      const agentPath = join(subdir, `agent-${agentId}.jsonl`);
+      writeFileSync(agentPath, jsonl([textTurn("hi")]));
+      const t = new Date(now - 1_000);
+      utimesSync(agentPath, t, t);
+
+      writeFileSync(
+        transcriptPath,
+        jsonl([user([], { toolUseResult: { agentId, agentType: "Explore" } })]),
+      );
+
+      const first = await __test.liveSubagents(
+        transcriptPath,
+        now,
+        new Set(),
+        new Set(),
+      );
+      expect(first[0]?.name).toBe("Explore");
+
+      // the parent transcript no longer carries the name, but the agent
+      // file's mtime is unchanged, so the cached name is reused rather than
+      // re-resolved from the (now empty) parent
+      writeFileSync(transcriptPath, jsonl([]));
+      const second = await __test.liveSubagents(
+        transcriptPath,
+        now,
+        new Set(),
+        new Set(),
+      );
+      expect(second[0]?.name).toBe("Explore");
+    });
+
+    // liveSubagents re-scans the parent transcript every call while a live
+    // agent's name is still unresolved (a synchronous agent's toolUseResult
+    // only lands at completion, so it has to keep looking). That scan itself
+    // is cached by the parent transcript's mtime + size, so an agent that
+    // can never resolve (prompt outside the tail window, no toolUseResult)
+    // doesn't force a full re-parse of the parent on every refresh.
+    test("does not re-scan the parent transcript while its mtime and size are unchanged", async () => {
+      const transcriptPath = join(dir, "cacheskip.jsonl");
+      const subdir = join(dir, "cacheskip", "subagents");
+      mkdirSync(subdir, { recursive: true });
+      const agentId = "cacheskip1";
+      const agentPath = join(subdir, `agent-${agentId}.jsonl`);
+      writeFileSync(agentPath, jsonl([textTurn("hi")]));
+      const agentT = new Date(now - 1_000);
+      utimesSync(agentPath, agentT, agentT);
+
+      // two single-line parent transcripts, padded to the exact same byte
+      // length: one with no matching toolUseResult, one with a matching one
+      const miss = JSON.stringify(
+        user([{ type: "tool_result", content: "x" }]),
+      );
+      const hit = JSON.stringify(
+        user([{ type: "tool_result", content: "x" }], {
+          toolUseResult: { agentId, agentType: "code-locator" },
+        }),
+      );
+      const width = Math.max(miss.length, hit.length);
+      const parentT = new Date(now - 500);
+
+      writeFileSync(transcriptPath, `${miss.padEnd(width, " ")}\n`);
+      utimesSync(transcriptPath, parentT, parentT);
+      const first = await __test.liveSubagents(
+        transcriptPath,
+        now,
+        new Set(),
+        new Set(),
+      );
+      expect(first[0]?.name).toBeNull();
+
+      // same mtime and byte length as before, but now contains a match — if
+      // the scan were skipped via the mtime+size cache (as intended), this
+      // update is invisible and the name stays unresolved
+      writeFileSync(transcriptPath, `${hit.padEnd(width, " ")}\n`);
+      utimesSync(transcriptPath, parentT, parentT);
+      const second = await __test.liveSubagents(
+        transcriptPath,
+        now,
+        new Set(),
+        new Set(),
+      );
+      expect(second[0]?.name).toBeNull();
+
+      // a bumped mtime alone doesn't force a re-scan either: an active
+      // session's transcript changes on nearly every refresh, so re-scans
+      // are throttled while the last one is recent
+      const laterT = new Date(now - 100);
+      utimesSync(transcriptPath, laterT, laterT);
+      const third = await __test.liveSubagents(
+        transcriptPath,
+        now + 2_000,
+        new Set(),
+        new Set(),
+      );
+      expect(third[0]?.name).toBeNull();
+
+      // once the throttle window has passed, the changed mtime finally
+      // triggers a re-scan and the now-matching content is picked up
+      const fourth = await __test.liveSubagents(
+        transcriptPath,
+        now + 11_000,
+        new Set(),
+        new Set(),
+      );
+      expect(fourth[0]?.name).toBe("code-locator");
+    });
+
+    // pruneParentNamesCache is wired into collectRows' cache-lifecycle pass
+    // (src/collect.ts) the same way pruneAgentCache/pruneTranscriptCache are;
+    // it just needs to be safe to call with any keep set.
+    test("pruneParentNamesCache accepts any keep set without throwing", () => {
+      expect(() => __test.pruneParentNamesCache(new Set())).not.toThrow();
+      expect(() =>
+        __test.pruneParentNamesCache(new Set(["/nonexistent.jsonl"])),
+      ).not.toThrow();
+    });
+
+    // AGENT_ID_RE only assumes the filename shape agent-<id>.jsonl; the id
+    // itself can be anything, not just hex.
+    test("resolves an agent id with non-hex characters from its filename", async () => {
+      const transcriptPath = join(dir, "byid2.jsonl");
+      const subdir = join(dir, "byid2", "subagents");
+      mkdirSync(subdir, { recursive: true });
+      const agentId = "x_y-9";
+      const agentPath = join(subdir, `agent-${agentId}.jsonl`);
+      writeFileSync(agentPath, jsonl([textTurn("hi")]));
+      const t = new Date(now - 1_000);
+      utimesSync(agentPath, t, t);
+
+      writeFileSync(
+        transcriptPath,
+        jsonl([
+          user([{ type: "tool_result", content: "..." }], {
+            toolUseResult: { agentId, agentType: "code-locator" },
+          }),
+        ]),
+      );
+
+      const agents = await __test.liveSubagents(
+        transcriptPath,
+        now,
+        new Set(),
+        new Set(),
+      );
+      expect(agents[0]?.name).toBe("code-locator");
+    });
+  });
 });
 
 // hostApp walks a process's ancestry past shells and wrappers to the program

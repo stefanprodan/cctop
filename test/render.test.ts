@@ -76,6 +76,7 @@ describe("render helpers", () => {
           ],
           subagents: [
             {
+              name: "code-locator",
               model: "claude-sonnet-4",
               ctx: 42_000,
               activity: "Read",
@@ -96,6 +97,14 @@ describe("render helpers", () => {
     expect(text).toContain("cctop");
     expect(text).toContain("implement tests");
     expect(text).toContain("bun test");
+    // the sub-agent's name field spans VER+HOST+PROJECT, so its activity
+    // snaps to the same column as a session row's BRANCH value
+    expect(text).toContain("code-locator");
+    const branchCol = stripAnsi(frame.header).indexOf("BRANCH");
+    const agentLineText = stripAnsi(
+      frame.groups[0].lines.find((l) => l.includes("code-locator"))!,
+    );
+    expect(agentLineText.indexOf("Read")).toBe(branchCol);
     // the child's listening port shows in the list tree, not only the detail view
     expect(text).toContain(":5173");
     // connected tree gutter: ● session, then a spine of branches — the
@@ -108,6 +117,7 @@ describe("render helpers", () => {
 
   test("caps sub-agent and sub-process rows in list view; detail shows all", () => {
     const subagents = Array.from({ length: 12 }, (_, i) => ({
+      name: null,
       model: "claude-haiku-4-5-20251001",
       ctx: 18_000 - i * 500,
       activity: `Bash: job ${i + 1}`,
@@ -144,6 +154,62 @@ describe("render helpers", () => {
     // the tool name is tagged and the colon dropped: "Edit: render.ts" → "Edit render.ts"
     expect(detail).toContain("Edit render.ts");
     expect(detail).toContain("│"); // quoted blocks get a left gutter
+  });
+
+  test("shows a sub-agent's resolved name in list and detail views", () => {
+    const row = baseRow({
+      subagents: [
+        {
+          // shortModel outputs are kept within the session's own MODEL
+          // column width (from "claude-opus-4-8" -> "opus-4-8", 8 chars) so
+          // none of these overflow it and skew the name-column alignment
+          // checks below.
+          name: "code-locator",
+          model: "claude-haiku-4",
+          ctx: 8_000,
+          activity: "Grep: TODO",
+          uptimeSec: 12,
+        },
+        {
+          name: null,
+          model: "claude-sonnet-4",
+          ctx: 4_000,
+          activity: "Bash: ls",
+          uptimeSec: 3,
+        },
+        {
+          name: "loc",
+          model: "claude-opus-4",
+          ctx: 2_000,
+          activity: "Read: a.ts",
+          uptimeSec: 1,
+        },
+      ],
+    });
+
+    const frame = buildFrame([row], 160);
+    const plainLines = frame.groups[0].lines.map(stripAnsi);
+    const namedLine = plainLines.find((l) => l.includes("Grep: TODO"))!;
+    const nullLine = plainLines.find((l) => l.includes("Bash: ls"))!;
+    const shortNameLine = plainLines.find((l) => l.includes("Read: a.ts"))!;
+    expect(namedLine).toContain("code-locator");
+    expect(shortNameLine).toContain("loc");
+    // the name field spans VER+HOST+PROJECT, so every agent's activity
+    // starts at the same column as a session row's BRANCH value — regardless
+    // of the name's length, or whether it has one at all
+    const branchCol = stripAnsi(frame.header).indexOf("BRANCH");
+    expect(namedLine.indexOf("Grep: TODO")).toBe(branchCol);
+    expect(shortNameLine.indexOf("Read: a.ts")).toBe(branchCol);
+    // a null name still gets the padded empty field, so its activity lines
+    // up at that same column too, rather than sitting right after the model
+    expect(nullLine.indexOf("Bash: ls")).toBe(branchCol);
+
+    const detail = stripAnsi(renderDetail(row, 120).join("\n"));
+    expect(detail).toContain(
+      "◆ code-locator · haiku-4 · 8k ctx · up 12s · Grep: TODO",
+    );
+    // an unresolved name leaves the detail line format unchanged
+    expect(detail).toContain("◆ sonnet-4 · 4k ctx · up 3s · Bash: ls");
   });
 
   test("marks a cross-provider agent child live and cyan in list and detail", () => {
@@ -255,6 +321,7 @@ describe("render helpers", () => {
           ],
           subagents: [
             {
+              name: "code-locator\x1b[31m",
               model: "claude-sonnet-4\x1b[2J",
               ctx: 12_000,
               activity: "Read\x1b]52;c;secret\x07file",
@@ -271,12 +338,14 @@ describe("render helpers", () => {
     );
     expect(raw).not.toContain("\x1b]52");
     expect(raw).not.toContain("\x1b[2J");
+    expect(raw).not.toContain("\x1b[31m");
     expect(raw).not.toContain("\x07");
 
     const plain = stripAnsi(raw);
     expect(plain).toContain("Host");
     expect(plain).toContain("badprompt");
     expect(plain).toContain("node-red");
+    expect(plain).toContain("code-locator");
     expect(plain).toContain("Readfile");
   });
 
