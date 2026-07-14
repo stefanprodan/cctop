@@ -1626,6 +1626,31 @@ describe("claude process identification", () => {
     expect(__test.isClaudeProc(proc("bash", null))).toBe(false);
   });
 
+  // The executable is multicall: Claude Code's bundled tools re-exec the same
+  // binary with argv[0] set to the tool's name. Such a process carries a
+  // session's exec path without being one, and matching on the path alone made
+  // it a phantom session row — and took it out of the sub-process tree of the
+  // session that spawned it. argv[0] is what settles it: a session is invoked as
+  // `claude`, or as the version-named binary itself (nested/resumed), where
+  // argv[0] is the path's own last segment. A re-exec'd tool never is.
+  test("rejects a bundled tool that re-execs the claude binary", () => {
+    expect(
+      __test.isClaudeProc(proc("ugrep", "/u/claude/versions/2.1.209")),
+    ).toBe(false);
+    expect(__test.isClaudeProc(proc("rg", "/u/claude/versions/2.1.209"))).toBe(
+      false,
+    );
+    // nor is it one of the helpers — the rule sits in the executable half both
+    // predicates share, and the orphan-port scan reads the helper one
+    expect(isClaudeHelper(proc("ugrep", "/u/claude/versions/2.1.209"))).toBe(
+      false,
+    );
+    // but the version-named session itself still reads as one
+    expect(
+      __test.isClaudeProc(proc("2.1.209", "/u/claude/versions/2.1.209")),
+    ).toBe(true);
+  });
+
   // Claude Code spawns helpers that are named "claude" and exec the same
   // versioned binary a session does, so name and path alone let them through.
   // A helper row is worse than a spare row: it writes no registry entry, so it

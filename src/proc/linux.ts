@@ -12,6 +12,15 @@ import { parseProcNetDev } from "./netdev.ts";
 import { parseTcpListen } from "./nettcp.ts";
 import type { Proc, ProcSource } from "./types.ts";
 
+// /proc/<pid>/exe readlinks to ".../2.1.206 (deleted)" once the binary behind a
+// running process is gone — the normal end-state of any long-lived Claude Code
+// session, since it auto-upgrades out from under itself. The marker is not part
+// of the path, and stripping it is load-bearing beyond cosmetics: a nested or
+// resumed session is identified by its exec path agreeing with argv[0] (see
+// isClaudeProc), so a session that outlived its own install is only still a
+// session because of this. Pure, and exported, so that coupling has a test.
+export const execPath = (target: string) => target.replace(/ \(deleted\)$/, "");
+
 export function createLinuxSource(): ProcSource {
   const CLK_TCK = 100; // USER_HZ, fixed on every mainstream architecture
 
@@ -39,7 +48,7 @@ export function createLinuxSource(): ProcSource {
 
         let path: string | null = null;
         try {
-          path = readlinkSync(`/proc/${pid}/exe`).replace(/ \(deleted\)$/, "");
+          path = execPath(readlinkSync(`/proc/${pid}/exe`));
         } catch {} // not ours to inspect
 
         // /proc/pid/cmdline is the NUL-separated argv, and only argv (the
