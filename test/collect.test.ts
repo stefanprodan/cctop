@@ -11,6 +11,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isOrphanCandidate } from "../src/collect/orphans.ts";
+import { isClaudeHelper } from "../src/collect/process-tree.ts";
+import type { Session } from "../src/collect/sessions.ts";
 import {
   __test,
   captureUsage,
@@ -770,9 +773,11 @@ describe("host resolution", () => {
     expect(__test.hostApp(claude, tree([claude, shell, term]))).toBe("Ghostty");
   });
 
+  // the names here are the ones parseCommand actually yields for these hosts:
+  // both rewrite their process title ("tmux: server", "sshd-session: user@pts/0")
   test("recognizes tmux and ssh by process name", () => {
     const claude = proc({ pid: 20, ppid: 21 });
-    const tmux = proc({ pid: 21, ppid: 1, name: "tmux: server" });
+    const tmux = proc({ pid: 21, ppid: 1, name: "tmux" });
     expect(__test.hostApp(claude, tree([claude, tmux]))).toBe("tmux");
 
     const claude2 = proc({ pid: 30, ppid: 31 });
@@ -941,6 +946,7 @@ describe("sub-process resolution", () => {
     startSec: 0,
     path: null,
     name: "node",
+    sub: null,
     uid: 0,
     ...over,
   });
@@ -1095,6 +1101,49 @@ describe("projectForCwd", () => {
   });
 });
 
+// Which processes the orphan scan will even look at. The gate that costs a
+// cwdOf syscall per process, so it is the one worth getting right — and it is
+// where a leftover dev server is told apart from Claude Code's own helpers,
+// which look exactly like one (init-reparented, ours, in the project's dir).
+describe("orphan candidacy (isOrphanCandidate)", () => {
+  const ownUid = 501;
+  const rows = new Set([100]); // a session already holding a row
+  const p = (over: Partial<Proc>): Proc => ({
+    pid: 1,
+    ppid: 1,
+    rss: 0,
+    cpuSec: 0,
+    startSec: 0,
+    path: null,
+    name: "node",
+    sub: null,
+    uid: ownUid,
+    ...over,
+  });
+
+  test("takes an init-reparented process we own", () => {
+    expect(isOrphanCandidate(p({ pid: 9 }), ownUid, rows)).toBe(true);
+  });
+
+  test("leaves alone what is not ours, not orphaned, or already a row", () => {
+    expect(isOrphanCandidate(p({ pid: 9, ppid: 42 }), ownUid, rows)).toBe(
+      false,
+    );
+    expect(isOrphanCandidate(p({ pid: 9, uid: 0 }), ownUid, rows)).toBe(false);
+    expect(isOrphanCandidate(p({ pid: 100 }), ownUid, rows)).toBe(false);
+  });
+
+  // the whole reason this predicate exists: an orphan is offered up for SIGTERM
+  // (`f`), and Claude Code's pty host clears every other gate
+  test("never offers up one of Claude Code's own helpers", () => {
+    const host = p({ pid: 9, name: "claude", sub: "bg-pty-host" });
+    expect(isOrphanCandidate(host, ownUid, rows)).toBe(false);
+    // but a real dev server that merely takes a `daemon` subcommand still counts
+    const server = p({ pid: 9, name: "colima", sub: "daemon" });
+    expect(isOrphanCandidate(server, ownUid, rows)).toBe(true);
+  });
+});
+
 // cpuPercent is top-style: the delta between two samples once it has a prior,
 // or the lifetime average on the first sample. PID reuse can make the counter
 // go backwards, which must clamp to 0 rather than report a negative spike.
@@ -1135,10 +1184,185 @@ describe("cpu sampling", () => {
   });
 });
 
-// Identifying a Claude Code process and reading its version out of the
-// version-named executable path (.../claude/versions/2.1.176).
+// A registry entry is keyed by pid, and pids get reused — so an entry only
+// belongs to a process whose start time it matches. Without this the row would
+// wear a dead session's identity.
+describe("registry ownership (sessionOwns)", () => {
+  const startedAt = 1_700_000_000_000; // the entry's own timestamp, ms
+  const startSec = startedAt / 1000; // a process that started with it
+  const nowMs = startedAt + 60 * 60 * 1000;
+  const entry = { startedAt } as Session;
+
+  test("accepts an entry whose timestamp matches the process start", () => {
+    expect(__test.sessionOwns(entry, startSec, nowMs)).toBe(true);
+    expect(__test.sessionOwns(entry, startSec + 30, nowMs)).toBe(true); // slack
+  });
+
+  test("rejects an entry left behind by a reused pid", () => {
+    // the process started an hour after the entry was written: a different one
+    expect(__test.sessionOwns(entry, startSec + 3600, nowMs)).toBe(false);
+    expect(__test.sessionOwns(entry, startSec - 3600, nowMs)).toBe(false);
+  });
+
+  // the tolerance is a boundary, so it is asserted at the boundary — either side
+  // of 60s, in both directions
+  test("holds the tolerance to exactly the slack it allows", () => {
+    expect(__test.sessionOwns(entry, startSec + 60, nowMs)).toBe(true);
+    expect(__test.sessionOwns(entry, startSec + 61, nowMs)).toBe(false);
+    expect(__test.sessionOwns(entry, startSec - 60, nowMs)).toBe(true);
+    expect(__test.sessionOwns(entry, startSec - 61, nowMs)).toBe(false);
+  });
+
+  test("rejects an entry stamped in the future", () => {
+    const skewed = { startedAt: nowMs + 3_600_000 } as Session;
+    expect(__test.sessionOwns(skewed, skewed.startedAt / 1000, nowMs)).toBe(
+      false,
+    );
+  });
+
+  // A clock that runs ahead writes an entry stamped in the future. Its own slack
+  // is a separate bound from the one above, so it gets its own boundary: an hour
+  // into the future proves nothing about where the line actually falls.
+  test("holds the future-skew bound to the same slack", () => {
+    const at = { startedAt: nowMs + 60_000 } as Session;
+    expect(__test.sessionOwns(at, at.startedAt / 1000, nowMs)).toBe(true);
+    const past = { startedAt: nowMs + 60_001 } as Session;
+    expect(__test.sessionOwns(past, past.startedAt / 1000, nowMs)).toBe(false);
+  });
+
+  // A process whose start time we could not read cannot be matched to an entry
+  // at all. The entry here is one whose timestamp a startSec of 0 would OTHERWISE
+  // sit within — so only the unreadable-start guard can reject it, and the test
+  // fails if that guard goes.
+  test("rejects a process whose start time is unreadable", () => {
+    const justBooted = { startedAt: 30_000 } as Session;
+    expect(__test.sessionOwns(justBooted, 0, 60_000)).toBe(false);
+  });
+});
+
+// The fallback for a process with no registry entry of its own: the newest
+// transcript in its project dir, and only one written since it started. Both
+// bounds keep a claude-named process without an entry from adopting a
+// transcript that is not its own and rendering as a duplicate of the session
+// that owns it — a live session's (claimed), or a previous one's (too old).
+describe("transcript fallback (latestTranscript)", () => {
+  let root: string;
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), "cctop-fallback-"));
+  });
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  const startSec = 1_700_000_000;
+  // a project dir of transcripts, each stamped a number of seconds after (or,
+  // when negative, before) the process started
+  const project = (name: string, files: Record<string, number>) => {
+    const dir = join(root, name);
+    mkdirSync(dir, { recursive: true });
+    const paths: Record<string, string> = {};
+    for (const [f, ageSec] of Object.entries(files)) {
+      const path = join(dir, f);
+      writeFileSync(path, "");
+      utimesSync(path, startSec + ageSec, startSec + ageSec);
+      paths[f] = path;
+    }
+    return { dir, paths };
+  };
+
+  test("takes the newest transcript written since the process started", () => {
+    const { dir, paths } = project("newest", {
+      "old.jsonl": 10,
+      "new.jsonl": 20,
+    });
+    expect(__test.latestTranscript(dir, startSec)).toBe(paths["new.jsonl"]!);
+  });
+
+  // The start-time bound, pinned on its own — with a stale transcript as the
+  // only candidate, the fallback must come back empty rather than adopt it.
+  // Asserting it alongside a newer transcript would prove nothing: the newer one
+  // wins on mtime whether or not the bound exists.
+  test("ignores a transcript that predates the process", () => {
+    const { dir } = project("stale-only", {
+      "previous-session.jsonl": -3600,
+    });
+    expect(__test.latestTranscript(dir, startSec)).toBeNull();
+  });
+
+  // the 60s of slack: a transcript written just before the process start is
+  // still its own (the session writes its first turn as it comes up)
+  test("allows the slack around the process start", () => {
+    const { dir, paths } = project("slack", { "mine.jsonl": -30 });
+    expect(__test.latestTranscript(dir, startSec)).toBe(paths["mine.jsonl"]!);
+  });
+
+  // a project with no transcripts at all: readdirSync throws, and the fallback
+  // has to absorb it rather than take collectRows down with it
+  test("returns null when the project has no transcript directory", () => {
+    expect(
+      __test.latestTranscript(join(root, "no-such-project"), startSec),
+    ).toBeNull();
+  });
+
+  test("skips a transcript a registry-backed session already owns", () => {
+    const { dir, paths } = project("claimed", {
+      "mine.jsonl": 10,
+      "live-session.jsonl": 20, // newest, but spoken for
+    });
+    const claimed = new Set([paths["live-session.jsonl"]!]);
+    expect(__test.latestTranscript(dir, startSec, claimed)).toBe(
+      paths["mine.jsonl"]!,
+    );
+  });
+
+  // the shape of the bug: a helper process in a live session's project dir. With
+  // every transcript there claimed, it gets none — an empty row, not a clone.
+  test("returns null when every candidate transcript is claimed", () => {
+    const { dir, paths } = project("all-claimed", {
+      "live-session.jsonl": 20,
+    });
+    const claimed = new Set([paths["live-session.jsonl"]!]);
+    expect(__test.latestTranscript(dir, startSec, claimed)).toBeNull();
+  });
+
+  // The other half of that guard: nothing in the registry spoke for this
+  // transcript, so the claim has to come from the fallback itself. Two
+  // registry-less candidates in one project — the first takes the transcript,
+  // the second finds it claimed and comes back empty instead of cloning it.
+  test("a fallback pick claims its transcript against the next candidate", () => {
+    const { dir, paths } = project("fallback-claims", {
+      "orphan.jsonl": 10,
+    });
+    const claimed = new Set<string>();
+    expect(__test.claimLatestTranscript(dir, startSec, claimed)).toBe(
+      paths["orphan.jsonl"]!,
+    );
+    expect(__test.claimLatestTranscript(dir, startSec, claimed)).toBeNull();
+  });
+
+  // ...and it takes only what it picked: a second transcript is still there for
+  // the next candidate, so the claim can't starve a project of its own rows.
+  test("a fallback pick leaves the transcripts it did not take", () => {
+    const { dir, paths } = project("fallback-leaves-rest", {
+      "older.jsonl": 10,
+      "newer.jsonl": 20,
+    });
+    const claimed = new Set<string>();
+    expect(__test.claimLatestTranscript(dir, startSec, claimed)).toBe(
+      paths["newer.jsonl"]!,
+    );
+    expect(__test.claimLatestTranscript(dir, startSec, claimed)).toBe(
+      paths["older.jsonl"]!,
+    );
+  });
+});
+
 describe("claude process identification", () => {
-  const proc = (name: string, path: string | null): Proc => ({
+  const proc = (
+    name: string,
+    path: string | null,
+    sub: string | null = null,
+  ): Proc => ({
     pid: 1,
     ppid: 1,
     rss: 0,
@@ -1146,6 +1370,7 @@ describe("claude process identification", () => {
     startSec: 0,
     path,
     name,
+    sub,
   });
 
   test("matches by name or a versioned executable path", () => {
@@ -1155,6 +1380,55 @@ describe("claude process identification", () => {
     ).toBe(true);
     expect(__test.isClaudeProc(proc("node", "/usr/bin/node"))).toBe(false);
     expect(__test.isClaudeProc(proc("bash", null))).toBe(false);
+  });
+
+  // Claude Code spawns helpers that are named "claude" and exec the same
+  // versioned binary a session does, so name and path alone let them through.
+  // A helper row is worse than a spare row: it writes no registry entry, so it
+  // falls back to the newest transcript in its cwd — and a bg-pty-host sits in
+  // the session's project dir, so it adopts that session's transcript and
+  // renders as its exact duplicate.
+  test("rejects the helper processes that share the claude name", () => {
+    expect(
+      __test.isClaudeProc(
+        proc("claude", "/u/claude/versions/2.1.206", "bg-pty-host"),
+      ),
+    ).toBe(false);
+    expect(__test.isClaudeProc(proc("claude", null, "bg-spare"))).toBe(false);
+    expect(__test.isClaudeProc(proc("claude", null, "daemon"))).toBe(false);
+    expect(__test.isClaudeProc(proc("claude", null, "mcp"))).toBe(false);
+    // the bg- prefix, not a fixed list, so a helper added later is excluded too
+    expect(__test.isClaudeProc(proc("claude", null, "bg-something"))).toBe(
+      false,
+    );
+  });
+
+  // only a helper carries a subcommand: a session is bare, takes flags (which
+  // never become `sub`), or is handed a prompt as its first argument
+  test("keeps a session that carries flags or a prompt", () => {
+    expect(__test.isClaudeProc(proc("claude", null, null))).toBe(true);
+    expect(__test.isClaudeProc(proc("claude", null, "fix"))).toBe(true);
+  });
+
+  // A helper is a claude executable running one of these subcommands — not any
+  // process that happens to take one. Plenty of CLIs have a `daemon` or `mcp`
+  // subcommand, and the orphan-port scan runs this predicate over the WHOLE
+  // process table, so without the executable half it would mistake someone
+  // else's leftover `mcp` server for one of Claude's helpers and hide it.
+  test("identifies a helper by its executable, not just its subcommand", () => {
+    expect(isClaudeHelper(proc("claude", null, "bg-pty-host"))).toBe(true);
+    expect(isClaudeHelper(proc("claude", null, "daemon"))).toBe(true);
+    expect(
+      isClaudeHelper(proc("2.1.206", "/u/claude/versions/2.1.206", "bg-spare")),
+    ).toBe(true);
+
+    expect(isClaudeHelper(proc("claude", null, null))).toBe(false); // a session
+    expect(isClaudeHelper(proc("colima", "/usr/bin/colima", "daemon"))).toBe(
+      false,
+    );
+    expect(isClaudeHelper(proc("some-cli", "/usr/bin/some-cli", "mcp"))).toBe(
+      false,
+    );
   });
 
   test("reads the version from the executable's last path segment", () => {

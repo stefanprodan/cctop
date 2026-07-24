@@ -9,7 +9,6 @@
 import { readdirSync, statSync } from "node:fs";
 import { truncate } from "../format.ts";
 import { contextTokens, describeAssistant } from "./entry.ts";
-import { projectDir } from "./paths.ts";
 
 // The last prompt is a preview, not a faithful copy (the detail view shows the
 // transcript path for the real thing). Cap it so a pasted blob can't bloat the
@@ -18,20 +17,46 @@ const PROMPT_MAX = 2048;
 
 // Without a registry entry, fall back to the project's most recently
 // modified transcript that has been written since the process started.
-export function latestTranscript(cwd: string | null, startSec: number) {
-  if (!cwd) return null;
-  const dir = projectDir(cwd);
+//
+// `claimed` holds the transcripts that registry-backed sessions already own, and
+// they are skipped: a process with no entry of its own must never adopt a live
+// session's transcript, or it renders as a perfect duplicate of that session —
+// same branch, context, model and prompt. Guarding it here means an unrecognized
+// claude-named process degrades into an empty row instead of a convincing clone.
+// Takes the project directory rather than the cwd it is derived from, so it can
+// be exercised against a temp dir like the other transcript readers.
+export function latestTranscript(
+  dir: string,
+  startSec: number,
+  claimed: ReadonlySet<string> = new Set(),
+) {
   let best: { path: string; mtimeMs: number } | null = null;
   try {
     for (const f of readdirSync(dir)) {
       if (!f.endsWith(".jsonl")) continue;
-      const mtimeMs = statSync(`${dir}/${f}`).mtimeMs;
+      const path = `${dir}/${f}`;
+      if (claimed.has(path)) continue;
+      const mtimeMs = statSync(path).mtimeMs;
       if (mtimeMs < startSec * 1000 - 60_000) continue;
-      if (!best || mtimeMs > best.mtimeMs)
-        best = { path: `${dir}/${f}`, mtimeMs };
+      if (!best || mtimeMs > best.mtimeMs) best = { path, mtimeMs };
     }
   } catch {} // no transcripts for this project
   return best?.path ?? null;
+}
+
+// The fallback pick together with the claim that has to follow it: a pick is
+// added to `claimed` too, so a second registry-less process in the same project
+// cannot adopt the same transcript and render as a duplicate of the first. The
+// pair lives here rather than at the call site so the claim can't drift away
+// from the pick — and so the invariant is testable on a temp dir.
+export function claimLatestTranscript(
+  dir: string,
+  startSec: number,
+  claimed: Set<string>,
+) {
+  const path = latestTranscript(dir, startSec, claimed);
+  if (path) claimed.add(path);
+  return path;
 }
 
 export interface Details {

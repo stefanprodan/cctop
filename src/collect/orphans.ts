@@ -9,12 +9,35 @@
 // daemons. Read-only; spawns nothing.
 
 import { cwdOf, listeningPorts, type Proc } from "../proc.ts";
+import { isClaudeHelper } from "./process-tree.ts";
 import type { Instance } from "./types.ts";
 
 // The tracked project dir that contains `cwd` — an exact match or an ancestor
 // with a path-segment boundary (so /a/foo never matches /a/foobar). null if none.
 export const projectForCwd = (cwd: string, dirs: string[]): string | null =>
   dirs.find((d) => cwd === d || cwd.startsWith(`${d}/`)) ?? null;
+
+// Could this process be a dev server someone left behind? The uid gate is the
+// cheap one — init (ppid 1) reparents most of the host's daemons and they belong
+// to other users, so dropping them on a field compare avoids a cwdOf syscall per
+// daemon on every refresh. A dev server we left behind shares our uid and
+// survives to the cwd check.
+//
+// Claude Code's own helpers have to be named explicitly. They are
+// init-reparented, ours, and run in the session's project dir, so they clear
+// every other gate; candidatePids covered them back when they were rows. They
+// hold no listening TCP socket today, but an orphan is offered up for SIGTERM
+// (`f`), and offering to kill Claude Code's pty host is not a mistake worth
+// leaving one syscall away.
+export const isOrphanCandidate = (
+  p: Proc,
+  ownUid: number,
+  candidatePids: Set<number>,
+) =>
+  p.ppid === 1 &&
+  p.uid === ownUid &&
+  !candidatePids.has(p.pid) &&
+  !isClaudeHelper(p);
 
 // Find orphaned listening servers among `procs` (the full process table) and
 // attach each to the session row(s) whose project contains its cwd, excluding
@@ -34,15 +57,10 @@ export function attachOrphanPorts(
   if (!byProject.size) return;
   const dirs = [...byProject.keys()];
 
-  // candidates: init-reparented procs we own whose cwd belongs to a tracked
-  // project. The uid gate is the cheap filter — launchd (ppid 1) reparents most
-  // of the host's daemons, and they belong to other users, so dropping them on
-  // a field compare avoids a cwdOf syscall per daemon on every refresh. A dev
-  // server we left behind shares our uid and survives to the cwd check.
   const ownUid = process.getuid?.() ?? -1;
   const matched: { pid: number; name: string; project: string }[] = [];
   for (const p of procs) {
-    if (p.ppid !== 1 || p.uid !== ownUid || candidatePids.has(p.pid)) continue;
+    if (!isOrphanCandidate(p, ownUid, candidatePids)) continue;
     const cwd = cwdOf(p.pid);
     const project = cwd ? projectForCwd(cwd, dirs) : null;
     if (project) matched.push({ pid: p.pid, name: p.name, project });

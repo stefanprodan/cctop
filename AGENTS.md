@@ -95,8 +95,10 @@ src/binary.ts   facts about the file cctop runs from: isCompiledBinary() and the
 src/proc.ts     process-table facade: picks the platform impl at startup and
                 re-exports listAllProcesses(), cwdOf(), netCounters(), parseProcNetDev()
 src/proc/       per-platform sources behind that facade: darwin.ts (libproc FFI),
-                linux.ts (/proc), netdev.ts (pure /proc/net/dev parser),
-                types.ts (Proc/IfCounters/ProcSource)
+                linux.ts (/proc); plus the pure parsers they feed, each unit
+                tested on its own — cmdline.ts (argv → program name + subcommand,
+                shared by both), netdev.ts (/proc/net/dev), nettcp.ts
+                (/proc/net/tcp); types.ts (Proc/IfCounters/ProcSource)
 src/collect.ts  orchestrator: correlates the process table + session registry +
                 transcripts into Instance[]; exports collectRows(filter), matchRow()
 src/collect/    one collector per data source: sessions, usage, transcript,

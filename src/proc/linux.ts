@@ -7,6 +7,7 @@
 // on the wrong OS.
 
 import { readdirSync, readFileSync, readlinkSync } from "node:fs";
+import { parseCommand } from "./cmdline.ts";
 import { parseProcNetDev } from "./netdev.ts";
 import { parseTcpListen } from "./nettcp.ts";
 import type { Proc, ProcSource } from "./types.ts";
@@ -41,13 +42,12 @@ export function createLinuxSource(): ProcSource {
           path = readlinkSync(`/proc/${pid}/exe`).replace(/ \(deleted\)$/, "");
         } catch {} // not ours to inspect
 
-        const argv0 = readFileSync(`/proc/${pid}/cmdline`, "latin1").split(
-          "\0",
-        )[0];
-        const name =
-          argv0?.split("/").pop() ||
-          status.match(/^Name:\s+(.+)$/m)?.[1] ||
-          "?";
+        // /proc/pid/cmdline is the NUL-separated argv, and only argv (the
+        // environment lives in a separate file), so every field is safe to read
+        const argv = readFileSync(`/proc/${pid}/cmdline`, "latin1").split("\0");
+        const { name: argvName, sub } = parseCommand(argv);
+        // a kernel thread has an empty cmdline; its name lives in status
+        const name = argvName || status.match(/^Name:\s+(.+)$/m)?.[1] || "?";
         procs.push({
           pid,
           ppid,
@@ -56,6 +56,7 @@ export function createLinuxSource(): ProcSource {
           startSec,
           path,
           name,
+          sub,
           uid,
         });
       } catch {} // process exited mid-scan

@@ -8,6 +8,7 @@
 // query) lives inside createDarwinSource(); the facade calls it only on darwin.
 
 import { CString, dlopen, FFIType, ptr, read } from "bun:ffi";
+import { parseCommand, parseProcArgs } from "./cmdline.ts";
 import type { IfCounters, Proc, ProcSource } from "./types.ts";
 
 export function createDarwinSource(): ProcSource {
@@ -16,6 +17,7 @@ export function createDarwinSource(): ProcSource {
   const PROC_PIDVNODEPATHINFO = 9; // struct proc_vnodepathinfo, 2352 bytes
   const PROC_PIDT_SHORTBSDINFO = 13; // struct proc_bsdshortinfo, 64 bytes
   const CTL_KERN = 1;
+  const KERN_ARGMAX = 8;
   const KERN_PROCARGS2 = 49;
 
   // listening-port discovery via libproc fd introspection. Flavor selectors,
@@ -80,10 +82,26 @@ export function createDarwinSource(): ProcSource {
   const machToSec = machTimebase[0] / machTimebase[1] / 1e9;
 
   // argv[0] is how the process was invoked; the claude CLI shows up as
-  // "claude" here while its executable is named after its version.
-  // Layout of KERN_PROCARGS2: argc (i32), exec path, NUL padding, argv.
-  const argsBuf = new Uint8Array(8192);
-  const procArgv0 = (pid: number): string | null => {
+  // "claude" here while its executable is named after its version. argv[1] is
+  // read too: it is what tells a session apart from one of the helpers that
+  // share its name (`claude bg-pty-host`) — see isClaudeProc. parseProcArgs
+  // decodes the block; this closure only fetches it.
+  //
+  // Size the buffer from KERN_ARGMAX rather than guessing. KERN_PROCARGS2 hands
+  // back the process's whole environment along with argv, and it fails with
+  // ENOMEM rather than truncating when the buffer is too small — so a fixed
+  // guess would simply return nothing for any process with a large environment.
+  // A failed fetch reads as "no subcommand", which is exactly what lets Claude
+  // Code's helper processes pass for sessions, so this has to be sized right.
+  const argMax = (() => {
+    const mib = new Int32Array([CTL_KERN, KERN_ARGMAX]);
+    const out = new Int32Array(1);
+    const size = new BigUint64Array([BigInt(out.byteLength)]);
+    const r = libc.symbols.sysctl(ptr(mib), 2, ptr(out), ptr(size), null, 0n);
+    return r === 0 && out[0] > 0 ? out[0] : 1 << 20; // 1 MB, the current default
+  })();
+  const argsBuf = new Uint8Array(argMax);
+  const procArgv = (pid: number): string[] => {
     const mib = new Int32Array([CTL_KERN, KERN_PROCARGS2, pid]);
     const size = new BigUint64Array([BigInt(argsBuf.byteLength)]);
     const r = libc.symbols.sysctl(
@@ -94,18 +112,8 @@ export function createDarwinSource(): ProcSource {
       null,
       0n,
     );
-    if (r !== 0) return null;
-    // latin1: each byte maps 1:1 to a char, which is all we need to find the
-    // NUL-separated argv fields (Buffer avoids TextDecoder's stricter typing)
-    const raw = Buffer.from(argsBuf.slice(4, Number(size[0]))).toString(
-      "latin1",
-    );
-    const start = raw.indexOf("\0");
-    if (start < 0) return null;
-    const argv0 = raw.slice(start).replace(/^\0+/, "");
-    const end = argv0.indexOf("\0");
-    if (end < 0) return null;
-    return argv0.slice(0, end) || null;
+    if (r !== 0) return []; // not ours to inspect, or exited mid-scan
+    return parseProcArgs(argsBuf, Number(size[0]));
   };
 
   // proc_vnodepathinfo: pvi_cdir.vip_path sits after the 152-byte
@@ -318,13 +326,14 @@ export function createDarwinSource(): ProcSource {
       const path = readCstr(
         libproc.symbols.proc_pidpath(pid, ptr(cstr), cstr.byteLength),
       );
+      const { name: argvName, sub } = parseCommand(procArgv(pid));
       const name =
-        procArgv0(pid)?.split("/").pop() ??
+        argvName ??
         readCstr(libproc.symbols.proc_name(pid, ptr(cstr), cstr.byteLength)) ??
         comm ??
         path?.split("/").pop() ??
         "?";
-      procs.push({ pid, ppid, rss, cpuSec, startSec, path, name, uid });
+      procs.push({ pid, ppid, rss, cpuSec, startSec, path, name, sub, uid });
     }
     return procs;
   };

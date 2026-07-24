@@ -8,9 +8,38 @@
 
 import type { Proc } from "../proc.ts";
 
+// Claude Code ships processes that are not sessions but are indistinguishable
+// from one by name and executable: the background daemon and the pty/spare
+// hosts it spawns (`claude daemon run`, `claude bg-pty-host`, `claude
+// bg-spare`), plus management commands like `claude mcp`. They are named
+// "claude" and exec the same versioned binary a session does.
+//
+// Letting one through is worse than an extra row: a helper writes no session
+// registry entry, so its row falls back to the newest transcript in its cwd —
+// and a bg-pty-host sits in the *session's* project directory, so it adopts the
+// live session's transcript and renders as its exact duplicate.
+//
+// The subcommand is what tells them apart. `bg-` as a prefix rather than a list
+// of names, so a helper added later is excluded by default; a session is either
+// bare `claude` or takes flags (`claude -p …`), never one of these.
+//
+// Both halves matter. The subcommand alone is not Claude's — plenty of CLIs take
+// a `daemon` or an `mcp` subcommand — so a helper is a claude *executable*
+// running one. Callers outside candidate selection depend on that: the
+// orphan-port scan runs this over the whole process table, and without the
+// executable half it would mistake someone else's `mcp` server for one of ours.
+const CLAUDE_COMMANDS = new Set(["daemon", "mcp"]);
+
 // The version-named executable lives under .../claude/versions/2.1.176
-export const isClaudeProc = (p: Proc) =>
+const isClaudeExe = (p: Proc) =>
   p.name === "claude" || /\/claude\/versions\/\d/.test(p.path ?? "");
+
+export const isClaudeHelper = (p: Proc) =>
+  isClaudeExe(p) &&
+  !!p.sub &&
+  (p.sub.startsWith("bg-") || CLAUDE_COMMANDS.has(p.sub));
+
+export const isClaudeProc = (p: Proc) => isClaudeExe(p) && !isClaudeHelper(p);
 
 export const versionFromPath = (path: string | null) =>
   path
