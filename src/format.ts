@@ -22,6 +22,9 @@ export const BLUE_BG = "\x1b[104m";
 const ANSI_RE =
   /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])/g;
 const CONTROL_RE = /[\x00-\x1f\x7f-\x9f]/g;
+// sticky twin of ANSI_RE, for scanners that walk a styled string one piece at
+// a time: it matches an escape only where the scan currently stands
+const ANSI_AT = new RegExp(ANSI_RE.source, "y");
 // Display width in terminal columns, not code units: Bun.stringWidth is
 // ANSI-aware and counts CJK/emoji as 2 and combining marks as 0, so columns
 // stay aligned for non-ASCII project/branch names that a naive .length skews.
@@ -156,10 +159,42 @@ export function truncate(s: string, width: number) {
   return width <= 1 ? s.slice(0, width) : `${s.slice(0, width - 1)}…`;
 }
 
-// truncate() for a string that carries ANSI: inflate the budget by the invisible
-// escape bytes so the *visible* text is cut to `width` and color codes survive.
-export const truncateStyled = (s: string, width: number) =>
-  truncate(s, width + (s.length - visLen(s)));
+// truncate() measured in terminal columns rather than code units, and safe on
+// a string that carries ANSI — for a value dropped into a fixed-width field,
+// where a CJK/emoji one that .length counts as short overflows the column
+// pad() reserved for it and shifts the rest of the row. Escape sequences pass
+// through whole: they cost no columns, and slicing one in half would leak its
+// raw bytes. Ones past the cut pass through too, since dropping a trailing
+// RESET would leak the last open style into every line drawn after this one.
+// Steps by code point, so it never cuts a surrogate pair in half.
+export function truncateStyled(s: string, width: number) {
+  if (visLen(s) <= width) return s;
+  const budget = width <= 1 ? width : width - 1; // room for the ellipsis
+  let out = "";
+  let w = 0;
+  let i = 0;
+  let full = false; // budget spent: visible chars drop, escapes still pass
+  while (i < s.length) {
+    ANSI_AT.lastIndex = i;
+    const esc = ANSI_AT.exec(s)?.[0];
+    if (esc) {
+      out += esc;
+      i += esc.length;
+      continue;
+    }
+    const ch = String.fromCodePoint(s.codePointAt(i)!);
+    i += ch.length;
+    if (full) continue;
+    const cw = visLen(ch);
+    if (w + cw > budget) {
+      full = true;
+      continue;
+    }
+    out += ch;
+    w += cw;
+  }
+  return width <= 1 ? out : `${out}…`;
+}
 
 // Like truncate(), but drops from the *left* and leads with the ellipsis —
 // for paths, where the tail (the filename) matters more than the prefix.

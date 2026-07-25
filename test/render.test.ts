@@ -237,6 +237,53 @@ describe("render helpers", () => {
     expect(line.indexOf("Bash: ls")).toBeLessThan(branchCol);
   });
 
+  test("drops the detail name separator when the name sanitizes away", () => {
+    const row = baseRow({
+      subagents: [
+        {
+          // escape and control bytes only: the escape sequence is dropped and
+          // the control byte becomes a space, so nothing visible survives
+          name: "\x1b[31m\x07",
+          model: "claude-haiku-4",
+          ctx: 8_000,
+          activity: "Grep: TODO",
+          uptimeSec: 12,
+        },
+      ],
+    });
+
+    const detail = stripAnsi(renderDetail(row, 120).join("\n"));
+    // the list view already treats this agent as nameless; the detail line
+    // must agree instead of leading with a dangling separator
+    expect(detail).toContain("◆ haiku-4 · 8k ctx · up 12s · Grep: TODO");
+  });
+
+  test("keeps the grid when a sub-agent name carries wide characters", () => {
+    const row = baseRow({
+      subagents: [
+        {
+          // 8 code units, 16 terminal columns — a name counted by .length
+          // would overrun the field and shove the activity off the grid
+          name: "検索エージェント検索エージェント",
+          model: "claude-haiku-4",
+          ctx: 8_000,
+          activity: "Grep: TODO",
+          uptimeSec: 12,
+        },
+      ],
+    });
+
+    const frame = buildFrame([row], 160);
+    const line = stripAnsi(
+      frame.groups[0].lines.find((l) => l.includes("Grep: TODO"))!,
+    );
+    // the activity still starts at the BRANCH column, in terminal columns
+    // (not code units, which a wide-character name makes disagree)
+    const branchCol = stripAnsi(frame.header).indexOf("BRANCH");
+    expect(visLen(line.slice(0, line.indexOf("Grep: TODO")))).toBe(branchCol);
+    expect(line).toContain("…"); // cut to fit, rather than overflowing
+  });
+
   test("marks a cross-provider agent child live and cyan in list and detail", () => {
     const row = baseRow({
       children: [

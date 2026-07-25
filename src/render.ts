@@ -106,6 +106,13 @@ type Cells = Record<string, string>;
 const safe = (s: string | null | undefined, fallback = "-") =>
   sanitizeDisplay(s ?? fallback);
 
+// The displayable sub-agent name — one rule shared by the list and detail
+// views so they can never disagree on whether a name is visible: a name that
+// is only escape or control bytes sanitizes to blanks, and an invisible name
+// must not claim space (or its separator) any more than a missing one does.
+const agentDisplayName = (a: { name: string | null }) =>
+  a.name ? safe(a.name).trim() : "";
+
 // A session that has just started and done nothing yet: no prompt, no turn, no
 // context. Surfaced as a dim "new session" rather than a blank prompt/empty
 // blocks, so a fresh session reads as fresh instead of broken.
@@ -457,7 +464,7 @@ export function buildFrame(
   // the frame has a name — an all-nameless frame keeps the activity right
   // after the model column instead of shifting it across an empty field.
   const frameHasNames = view.some((r) =>
-    r.subagents.slice(0, MAX_SUBAGENT_ROWS).some((a) => a.name),
+    r.subagents.slice(0, MAX_SUBAGENT_ROWS).some((a) => agentDisplayName(a)),
   );
   const agentNameW =
     widths[verI] +
@@ -468,13 +475,18 @@ export function buildFrame(
     const up = pad(agentCell("up", a), widths[upI], true);
     const ctx = pad(agentCell("ctx", a), widths[ctxI], true);
     const model = pad(agentCell("model", a), widths[modelI], false);
+    // cut in terminal columns, the unit pad() counts in: a name is arbitrary
+    // user text, so a CJK/emoji one would otherwise overrun the field and
+    // shove the activity out of the grid
     const name = frameHasNames
-      ? `  ${pad(truncate(a.name ?? "", agentNameW), agentNameW, false)}`
+      ? `  ${pad(truncateStyled(agentDisplayName(a), agentNameW), agentNameW, false)}`
       : "";
     const prefix = `${arm}  ${up}  ${ctx}  ${model}${name}`;
     const room = Math.max(termCols - visLen(prefix) - 2, 8);
-    let activity = a.activity ?? "";
-    if (activity.length > room) activity = `${activity.slice(0, room - 1)}…`;
+    // cut in the same terminal columns `room` was measured in: an activity is
+    // a tool argument, so a CJK/emoji one would otherwise wrap the row and
+    // push the frame off the bottom of the screen
+    const activity = truncateStyled(a.activity ?? "", room);
     const tail = activity ? `  ${activity}` : "";
     // trimEnd drops the name padding when nothing follows it, so a nameless
     // idle agent's row doesn't end in a run of spaces
@@ -795,7 +807,8 @@ export function renderDetail(
     for (const a of r.subagents) {
       const model = safe(shortModel(a.model), "agent");
       const ac = a.ctx != null ? formatTokens(a.ctx) : "?";
-      const name = a.name ? `${safe(a.name)} · ` : "";
+      const named = agentDisplayName(a);
+      const name = named ? `${named} · ` : "";
       const line = `${CYAN}◆${RESET} ${name}${model} · ${ac} ctx · up ${formatDuration(
         a.uptimeSec,
       )}${a.activity ? ` · ${safe(a.activity)}` : ""}`;
