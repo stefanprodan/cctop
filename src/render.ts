@@ -439,8 +439,6 @@ export function buildFrame(
   const modelI = colIdx.model;
   const upI = colIdx.up;
   const verI = colIdx.ver;
-  const hostI = colIdx.host;
-  const projectI = colIdx.project;
   // the arm a sub-agent row draws: spans the gutter and the empty pid/mem/cpu
   // columns (with their separators), reaching the UP column where its stats begin
   const agentArmW =
