@@ -69,18 +69,20 @@ export async function agentContext(path: string) {
   // caller drives it as a floating promise, so a throw here would take the
   // whole TUI down over one bad line. Whatever was read stays usable.
   try {
+    // mid-flight: a tool call was issued (awaiting its result) or a result
+    // just arrived (awaiting the next turn). A final text-only assistant turn
+    // means the agent finished, so the mtime window alone governs it. Derived
+    // before the message contents below, which walk arbitrary blocks: a
+    // malformed one there must not cost a live agent its row.
+    out.running =
+      !!last &&
+      ((last.type === "assistant" && hasBlock(last.message, "tool_use")) ||
+        (last.type === "user" && hasBlock(last.message, "tool_result")));
     if (lastUsage) {
       out.model = lastUsage.model;
       out.ctx = contextTokens(lastUsage.usage);
       out.activity = describeAssistant(lastUsage);
     }
-    // mid-flight: a tool call was issued (awaiting its result) or a result
-    // just arrived (awaiting the next turn). A final text-only assistant turn
-    // means the agent finished, so the mtime window alone governs it.
-    out.running =
-      !!last &&
-      ((last.type === "assistant" && hasBlock(last.message, "tool_use")) ||
-        (last.type === "user" && hasBlock(last.message, "tool_result")));
   } catch {
     // malformed entry, like a partial tail: keep what was derived so far
   }
@@ -95,7 +97,7 @@ export async function agentContext(path: string) {
 async function parentAgentNames(path: string) {
   const byId = new Map<string, string>();
   const { ok } = await readTailEntries(path, (e) => {
-    if (e.type === "user") {
+    if (e?.type === "user") {
       const r = e.toolUseResult;
       if (
         typeof r?.agentId === "string" &&

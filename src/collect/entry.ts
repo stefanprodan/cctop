@@ -31,8 +31,13 @@ export interface TranscriptEntry {
 // extract text this way, so it lives in this shared leaf.
 export function firstText(content: unknown): string | undefined {
   if (typeof content === "string") return content;
-  if (Array.isArray(content))
-    return content.find((b: any) => b?.type === "text")?.text;
+  if (Array.isArray(content)) {
+    // the block's text is raw JSON, so it is not a string just because the
+    // shape says "text": narrowed here rather than at each caller, one of
+    // which would otherwise call a string method on whatever was written
+    const text = content.find((b: any) => b?.type === "text")?.text;
+    return typeof text === "string" ? text : undefined;
+  }
   return undefined;
 }
 
