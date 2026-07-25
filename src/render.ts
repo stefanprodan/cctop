@@ -455,7 +455,12 @@ export function buildFrame(
   // PROJECT columns (with their gaps), so it always snaps to the grid: a
   // resolved (or empty, for a nameless agent) name field ends exactly where
   // a session row's BRANCH value begins, and the activity that follows lines
-  // up with it too.
+  // up with it too. The field only exists at all when some visible agent in
+  // the frame has a name — an all-nameless frame keeps the activity right
+  // after the model column instead of shifting it across an empty field.
+  const frameHasNames = view.some((r) =>
+    r.subagents.slice(0, MAX_SUBAGENT_ROWS).some((a) => a.name),
+  );
   const agentNameW = widths[verI] + 2 + widths[hostI] + 2 + widths[projectI];
   const agentLine = (a: AgentRow, isLast: boolean) => {
     const arm = agentArm(isLast);
@@ -463,15 +468,17 @@ export function buildFrame(
     const up = pad(agentCell("up", a), widths[upI], true);
     const ctx = pad(agentCell("ctx", a), widths[ctxI], true);
     const model = pad(agentCell("model", a), widths[modelI], false);
-    const name = pad(truncate(a.name ?? "", agentNameW), agentNameW, false);
-    const prefix = `${arm}  ${up}  ${ctx}  ${model}  ${name}`;
+    const name = frameHasNames
+      ? `  ${pad(truncate(a.name ?? "", agentNameW), agentNameW, false)}`
+      : "";
+    const prefix = `${arm}  ${up}  ${ctx}  ${model}${name}`;
     const room = Math.max(termCols - visLen(prefix) - 2, 8);
     let activity = a.activity ?? "";
     if (activity.length > room) activity = `${activity.slice(0, room - 1)}…`;
     const tail = activity ? `  ${activity}` : "";
     // trimEnd drops the name padding when nothing follows it, so a nameless
     // idle agent's row doesn't end in a run of spaces
-    return `${DIM}${arm}${RESET}  ${CYAN}${`${up}  ${ctx}  ${model}  ${name}${tail}`.trimEnd()}${RESET}`;
+    return `${DIM}${arm}${RESET}  ${CYAN}${`${up}  ${ctx}  ${model}${name}${tail}`.trimEnd()}${RESET}`;
   };
 
   // a dim summary line that stands in for capped sub-agent/sub-process rows; it

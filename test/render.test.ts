@@ -212,6 +212,31 @@ describe("render helpers", () => {
     expect(detail).toContain("◆ sonnet-4 · 4k ctx · up 3s · Bash: ls");
   });
 
+  test("omits the name field when no agent in the frame has a name", () => {
+    const row = baseRow({
+      subagents: [
+        {
+          name: null,
+          model: "claude-haiku-4",
+          ctx: 8_000,
+          activity: "Bash: ls",
+          uptimeSec: 3,
+        },
+      ],
+    });
+
+    const frame = buildFrame([row], 160);
+    const line = frame.groups[0].lines
+      .map(stripAnsi)
+      .find((l) => l.includes("Bash: ls"))!;
+    // with no names anywhere in the frame there is no name field: the
+    // activity follows the model column directly instead of being pushed
+    // out to the BRANCH column across an empty field
+    expect(line).toMatch(/haiku-4\s+Bash: ls/);
+    const branchCol = stripAnsi(frame.header).indexOf("BRANCH");
+    expect(line.indexOf("Bash: ls")).toBeLessThan(branchCol);
+  });
+
   test("marks a cross-provider agent child live and cyan in list and detail", () => {
     const row = baseRow({
       children: [
