@@ -3,6 +3,7 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -627,6 +628,29 @@ describe("transcript file scanning", () => {
     expect(ctx.activity).toBe("all done");
     expect(ctx.running).toBe(false);
   });
+
+  // collectRows runs from a floating promise, so a throw out of here would
+  // take the whole TUI down over one malformed line in one agent transcript
+  test("survives a malformed entry instead of throwing", async () => {
+    const path = write(
+      "agent-5.jsonl",
+      jsonl([
+        // a text block whose text is not a string: describeAssistant calls
+        // .replace on it
+        {
+          type: "assistant",
+          message: {
+            model: "claude-haiku-4",
+            usage: { input_tokens: 8 },
+            content: [{ type: "text", text: 42 }],
+          },
+        },
+      ]),
+    );
+    const ctx = await __test.agentContext(path);
+    expect(ctx.model).toBe("claude-haiku-4"); // whatever was derived survives
+    expect(ctx.activity).toBeUndefined();
+  });
 });
 
 // liveSubagents decides which sub-agent transcripts count as running, from
@@ -637,9 +661,15 @@ describe("sub-agent liveness", () => {
   let dir: string;
   const now = 1_700_000_000_000; // fixed clock; mtimes are set relative to it
 
-  // Write an agent transcript and stamp its mtime `ageMs` before `now`.
-  const agentFile = (name: string, ageMs: number, entries: unknown[]) => {
-    const subdir = join(dir, "session", "subagents");
+  // Write an agent transcript under <dir>/<session>/subagents and stamp its
+  // mtime `ageMs` before `now`.
+  const agentFile = (
+    name: string,
+    ageMs: number,
+    entries: unknown[],
+    session = "session",
+  ) => {
+    const subdir = join(dir, session, "subagents");
     mkdirSync(subdir, { recursive: true });
     const path = join(subdir, name);
     writeFileSync(path, jsonl(entries));
@@ -662,6 +692,14 @@ describe("sub-agent liveness", () => {
     ]);
   const textTurn = (text: string) =>
     assistant("claude-haiku-4", { input_tokens: 5 }, [{ type: "text", text }]);
+  // the parent-transcript shape a sub-agent's name comes from
+  const resultTurn = (agentId: string, agentType: string) =>
+    user([{ type: "tool_result", content: "..." }], {
+      toolUseResult: { agentId, agentType },
+    });
+  // liveSubagents with throwaway seen sets, as single-session tests call it
+  const live = (transcriptPath: string, atMs = now) =>
+    __test.liveSubagents(transcriptPath, atMs, new Set(), new Set());
 
   test("includes fresh and mid-tool-call agents, drops the rest", async () => {
     // fresh: quiet only 5s, finished — live anyway (inside the 20s window)
@@ -714,12 +752,12 @@ describe("sub-agent liveness", () => {
 
   test("attaches shared subagents to the first row in row-base order", async () => {
     const transcriptPath = join(dir, "ordered.jsonl");
-    const subdir = join(dir, "ordered", "subagents");
-    mkdirSync(subdir, { recursive: true });
-    const agentPath = join(subdir, "agent-ordered.jsonl");
-    writeFileSync(agentPath, jsonl([textTurn("owned")]));
-    const t = new Date(now - 1_000);
-    utimesSync(agentPath, t, t);
+    const agentPath = agentFile(
+      "agent-ordered.jsonl",
+      1_000,
+      [textTurn("owned")],
+      "ordered",
+    );
 
     const seen = new Set<string>();
     const rows = await __test.attachSubagentsInOrder(
@@ -743,6 +781,212 @@ describe("sub-agent liveness", () => {
     expect(await __test.liveSubagents(null, now, new Set(), new Set())).toEqual(
       [],
     );
+  });
+
+  // The unreadable-transcript cases take the read away with chmod, which a
+  // privileged user is not subject to: under root (a container or CI image,
+  // or sudo) the file stays readable and the case would assert a failed read
+  // that never happened, so it is skipped rather than reported as a bug.
+  const canDenyRead = (process.getuid?.() ?? 0) !== 0;
+
+  // A transiently unreadable agent transcript must not overwrite the cached
+  // snapshot with empty info: running would read false and a quiet
+  // mid-tool-call agent would vanish from the display until its next append.
+  // The previous snapshot is kept instead (its stale mtime retries later).
+  test.skipIf(!canDenyRead)(
+    "keeps the previous snapshot when the agent transcript turns unreadable",
+    async () => {
+      const transcriptPath = join(dir, "unreadable.jsonl");
+      // quiet mid-tool-call: past the 20s live window, carried by running=true
+      const agentPath = agentFile(
+        "agent-unread1.jsonl",
+        30_000,
+        [toolTurn("sleep 90")],
+        "unreadable",
+      );
+
+      const first = await live(transcriptPath);
+      expect(first[0]?.activity).toBe("Bash: sleep 90");
+
+      // the file turns unreadable while its mtime moves on; the cached
+      // snapshot — running:true included — must survive the failed rebuild
+      chmodSync(agentPath, 0o000);
+      const t1 = new Date(now - 29_000);
+      utimesSync(agentPath, t1, t1);
+      try {
+        const second = await live(transcriptPath);
+        expect(second[0]?.activity).toBe("Bash: sleep 90");
+      } finally {
+        chmodSync(agentPath, 0o644);
+      }
+    },
+  );
+
+  // With nothing cached to fall back on, a failed read must not drop the row:
+  // the agent is running, and an unknown-stats row beats a missing one.
+  test.skipIf(!canDenyRead)(
+    "still lists a fresh agent whose first read fails",
+    async () => {
+      const transcriptPath = join(dir, "unreadable2.jsonl");
+      // 5s quiet: inside the live window
+      const agentPath = agentFile(
+        "agent-unread2.jsonl",
+        5_000,
+        [toolTurn("sleep 90")],
+        "unreadable2",
+      );
+
+      chmodSync(agentPath, 0o000);
+      try {
+        const agents = await live(transcriptPath);
+        expect(agents.length).toBe(1);
+        expect(agents[0]?.model).toBe(null);
+        expect(agents[0]?.ctx).toBe(null);
+      } finally {
+        chmodSync(agentPath, 0o644);
+      }
+    },
+  );
+
+  // A sub-agent's own transcript never carries its name: it comes from the
+  // metadata sidecar written beside it, or from the parent's transcript as
+  // either a toolUseResult (agentId -> agentType) or an Agent/Task tool_use
+  // block (matched by the prompt it launched the agent with).
+  describe("sub-agent name resolution", () => {
+    // a workflow-launched agent is named only here — its parent records the
+    // Workflow call, never the agent — and it sits outside the flat
+    // <parent>/subagents/ layout the parent lookup is derived from
+    test("resolves a name from the agent's metadata sidecar", async () => {
+      const transcriptPath = join(dir, "meta.jsonl");
+      const agentPath = agentFile(
+        "agent-wf1.jsonl",
+        1_000,
+        [textTurn("hi")],
+        "meta",
+      );
+      writeFileSync(transcriptPath, jsonl([]));
+      writeFileSync(
+        agentPath.replace(/\.jsonl$/, ".meta.json"),
+        JSON.stringify({ agentType: "check-runner", spawnDepth: 1 }),
+      );
+      expect((await live(transcriptPath))[0]?.name).toBe("check-runner");
+    });
+
+    test("resolves a name from a toolUseResult agentId", async () => {
+      const transcriptPath = join(dir, "byid.jsonl");
+      const agentId = "deadbeef01";
+      agentFile(`agent-${agentId}.jsonl`, 1_000, [textTurn("hi")], "byid");
+      writeFileSync(
+        transcriptPath,
+        jsonl([resultTurn(agentId, "code-locator")]),
+      );
+      expect((await live(transcriptPath))[0]?.name).toBe("code-locator");
+    });
+
+    // an agent transcript outside the <parent>/subagents/ layout has no
+    // derivable parent, but the session transcript's exact agentId ->
+    // agentType pairing still names it
+    test("resolves a name via agentId for an agent outside the derivable-parent layout", async () => {
+      const transcriptPath = join(dir, "stray.jsonl");
+      const agentId = "strayid1";
+      const subdir = join(dir, "stray", "subagents", "nest");
+      mkdirSync(subdir, { recursive: true });
+      const agentPath = join(subdir, `agent-${agentId}.jsonl`);
+      writeFileSync(agentPath, jsonl([textTurn("hi")]));
+      const t = new Date(now - 1_000);
+      utimesSync(agentPath, t, t);
+      writeFileSync(
+        transcriptPath,
+        jsonl([resultTurn(agentId, "code-locator")]),
+      );
+      expect((await live(transcriptPath))[0]?.name).toBe("code-locator");
+    });
+
+    test("caches a resolved name across refreshes without re-scanning the parent", async () => {
+      const transcriptPath = join(dir, "namecache.jsonl");
+      const agentId = "cachedid1";
+      agentFile(`agent-${agentId}.jsonl`, 1_000, [textTurn("hi")], "namecache");
+      writeFileSync(transcriptPath, jsonl([resultTurn(agentId, "Explore")]));
+      expect((await live(transcriptPath))[0]?.name).toBe("Explore");
+
+      // the parent transcript no longer carries the name, but the agent
+      // file's mtime is unchanged, so the cached name is reused rather than
+      // re-resolved from the (now empty) parent
+      writeFileSync(transcriptPath, jsonl([]));
+      expect((await live(transcriptPath))[0]?.name).toBe("Explore");
+    });
+
+    // liveSubagents re-scans the parent transcript every call while a live
+    // agent's name is still unresolved (a synchronous agent's toolUseResult
+    // only lands at completion, so it has to keep looking). That scan itself
+    // is cached by the parent transcript's mtime + size, so an agent that
+    // can never resolve (prompt outside the tail window, no toolUseResult)
+    // doesn't force a full re-parse of the parent on every refresh.
+    test("does not re-scan the parent transcript while its mtime and size are unchanged", async () => {
+      const transcriptPath = join(dir, "cacheskip.jsonl");
+      const agentId = "cacheskip1";
+      agentFile(`agent-${agentId}.jsonl`, 1_000, [textTurn("hi")], "cacheskip");
+
+      // two single-line parent transcripts, padded to the exact same byte
+      // length: one with no matching toolUseResult, one with a matching one
+      const miss = JSON.stringify(
+        user([{ type: "tool_result", content: "x" }]),
+      );
+      const hit = JSON.stringify(resultTurn(agentId, "code-locator"));
+      const width = Math.max(miss.length, hit.length);
+      const parentT = new Date(now - 500);
+
+      writeFileSync(transcriptPath, `${miss.padEnd(width, " ")}\n`);
+      utimesSync(transcriptPath, parentT, parentT);
+      expect((await live(transcriptPath))[0]?.name).toBeNull();
+
+      // same mtime and byte length as before, but now contains a match — if
+      // the scan were skipped via the mtime+size cache (as intended), this
+      // update is invisible and the name stays unresolved
+      writeFileSync(transcriptPath, `${hit.padEnd(width, " ")}\n`);
+      utimesSync(transcriptPath, parentT, parentT);
+      expect((await live(transcriptPath))[0]?.name).toBeNull();
+
+      // a bumped mtime alone doesn't force a re-scan either: an active
+      // session's transcript changes on nearly every refresh, so re-scans
+      // are throttled while the last one is recent
+      const laterT = new Date(now - 100);
+      utimesSync(transcriptPath, laterT, laterT);
+      expect((await live(transcriptPath, now + 2_000))[0]?.name).toBeNull();
+
+      // once the throttle window has passed, the changed mtime finally
+      // triggers a re-scan and the now-matching content is picked up
+      expect((await live(transcriptPath, now + 11_000))[0]?.name).toBe(
+        "code-locator",
+      );
+    });
+
+    // A nested agent (agent-X/subagents/agent-Y.jsonl) was launched by
+    // agent-X, so its name lives in agent-X's transcript, not the session's:
+    // the parent transcript is derived from the agent's own path.
+    test("resolves a nested agent's name from its launching agent's transcript", async () => {
+      const transcriptPath = join(dir, "nested.jsonl");
+      const innerId = "inner1";
+      agentFile(
+        `agent-${innerId}.jsonl`,
+        1_000,
+        [textTurn("digging")],
+        "nested/subagents/agent-outer1",
+      );
+      // only the outer agent's transcript names the inner one
+      agentFile(
+        "agent-outer1.jsonl",
+        1_000,
+        [resultTurn(innerId, "code-locator")],
+        "nested",
+      );
+      writeFileSync(transcriptPath, jsonl([]));
+
+      const agents = await live(transcriptPath);
+      expect(agents.find((a) => a.activity === "digging")?.name).toBe(
+        "code-locator",
+      );
+    });
   });
 });
 

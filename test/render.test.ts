@@ -76,6 +76,7 @@ describe("render helpers", () => {
           ],
           subagents: [
             {
+              name: "code-locator",
               model: "claude-sonnet-4",
               ctx: 42_000,
               activity: "Read",
@@ -108,6 +109,7 @@ describe("render helpers", () => {
 
   test("caps sub-agent and sub-process rows in list view; detail shows all", () => {
     const subagents = Array.from({ length: 12 }, (_, i) => ({
+      name: null,
       model: "claude-haiku-4-5-20251001",
       ctx: 18_000 - i * 500,
       activity: `Bash: job ${i + 1}`,
@@ -144,6 +146,124 @@ describe("render helpers", () => {
     // the tool name is tagged and the colon dropped: "Edit: render.ts" → "Edit render.ts"
     expect(detail).toContain("Edit render.ts");
     expect(detail).toContain("│"); // quoted blocks get a left gutter
+  });
+
+  test("shows a sub-agent's resolved name in list and detail views", () => {
+    const row = baseRow({
+      subagents: [
+        {
+          // shortModel outputs are kept within the session's own MODEL
+          // column width (from "claude-opus-4-8" -> "opus-4-8", 8 chars) so
+          // none of these overflow it and skew the name-column alignment
+          // checks below.
+          name: "code-locator",
+          model: "claude-haiku-4",
+          ctx: 8_000,
+          activity: "Grep: TODO",
+          uptimeSec: 12,
+        },
+        {
+          name: null,
+          model: "claude-sonnet-4",
+          ctx: 4_000,
+          activity: "Bash: ls",
+          uptimeSec: 3,
+        },
+      ],
+    });
+
+    const frame = buildFrame([row], 160);
+    const plainLines = frame.groups[0].lines.map(stripAnsi);
+    const namedLine = plainLines.find((l) => l.includes("Grep: TODO"))!;
+    const nullLine = plainLines.find((l) => l.includes("Bash: ls"))!;
+    expect(namedLine).toContain("code-locator");
+    // the name field spans VER+HOST+PROJECT, so every agent's activity
+    // starts at the same column as a session row's BRANCH value — regardless
+    // of the name's length, or whether it has one at all
+    const branchCol = stripAnsi(frame.header).indexOf("BRANCH");
+    expect(namedLine.indexOf("Grep: TODO")).toBe(branchCol);
+    // a null name still gets the padded empty field, so its activity lines
+    // up at that same column too, rather than sitting right after the model
+    expect(nullLine.indexOf("Bash: ls")).toBe(branchCol);
+
+    const detail = stripAnsi(renderDetail(row, 120).join("\n"));
+    expect(detail).toContain(
+      "◆ code-locator · haiku-4 · 8k ctx · up 12s · Grep: TODO",
+    );
+    // an unresolved name leaves the detail line format unchanged
+    expect(detail).toContain("◆ sonnet-4 · 4k ctx · up 3s · Bash: ls");
+  });
+
+  test("omits the name field when no agent in the frame has a name", () => {
+    const row = baseRow({
+      subagents: [
+        {
+          name: null,
+          model: "claude-haiku-4",
+          ctx: 8_000,
+          activity: "Bash: ls",
+          uptimeSec: 3,
+        },
+      ],
+    });
+
+    const frame = buildFrame([row], 160);
+    const line = frame.groups[0].lines
+      .map(stripAnsi)
+      .find((l) => l.includes("Bash: ls"))!;
+    // with no names anywhere in the frame there is no name field: the
+    // activity follows the model column directly instead of being pushed
+    // out to the BRANCH column across an empty field
+    expect(line).toMatch(/haiku-4\s+Bash: ls/);
+    const branchCol = stripAnsi(frame.header).indexOf("BRANCH");
+    expect(line.indexOf("Bash: ls")).toBeLessThan(branchCol);
+  });
+
+  test("drops the detail name separator when the name sanitizes away", () => {
+    const row = baseRow({
+      subagents: [
+        {
+          // escape and control bytes only: the escape sequence is dropped and
+          // the control byte becomes a space, so nothing visible survives
+          name: "\x1b[31m\x07",
+          model: "claude-haiku-4",
+          ctx: 8_000,
+          activity: "Grep: TODO",
+          uptimeSec: 12,
+        },
+      ],
+    });
+
+    const detail = stripAnsi(renderDetail(row, 120).join("\n"));
+    // the list view already treats this agent as nameless; the detail line
+    // must agree instead of leading with a dangling separator
+    expect(detail).toContain("◆ haiku-4 · 8k ctx · up 12s · Grep: TODO");
+  });
+
+  test("keeps the grid when a sub-agent name carries wide characters", () => {
+    const row = baseRow({
+      subagents: [
+        {
+          // 8 code units, 16 terminal columns — a name counted by .length
+          // would overrun the field and shove the activity off the grid
+          name: "検索エージェント検索エージェント",
+          model: "claude-haiku-4",
+          ctx: 8_000,
+          activity: "Grep: TODO",
+          uptimeSec: 12,
+        },
+      ],
+    });
+
+    const frame = buildFrame([row], 160);
+    const line = stripAnsi(
+      frame.groups[0].lines.find((l) => l.includes("Grep: TODO"))!,
+    );
+    // the activity still starts at the BRANCH column, in terminal columns
+    // (not code units, which a wide-character name makes disagree)
+    const branchCol = stripAnsi(frame.header).indexOf("BRANCH");
+    expect(visLen(line.slice(0, line.indexOf("Grep: TODO")))).toBe(branchCol);
+    expect(line).toContain("…"); // cut to fit, rather than overflowing
   });
 
   test("marks a cross-provider agent child live and cyan in list and detail", () => {
@@ -255,6 +375,7 @@ describe("render helpers", () => {
           ],
           subagents: [
             {
+              name: "code-locator\x1b[31m",
               model: "claude-sonnet-4\x1b[2J",
               ctx: 12_000,
               activity: "Read\x1b]52;c;secret\x07file",
@@ -271,12 +392,14 @@ describe("render helpers", () => {
     );
     expect(raw).not.toContain("\x1b]52");
     expect(raw).not.toContain("\x1b[2J");
+    expect(raw).not.toContain("\x1b[31m");
     expect(raw).not.toContain("\x07");
 
     const plain = stripAnsi(raw);
     expect(plain).toContain("Host");
     expect(plain).toContain("badprompt");
     expect(plain).toContain("node-red");
+    expect(plain).toContain("code-locator");
     expect(plain).toContain("Readfile");
   });
 

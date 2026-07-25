@@ -24,6 +24,7 @@ export interface OrphanPort {
 }
 
 export interface SubAgent {
+  name: string | null;
   model: string | null;
   ctx: number | null;
   activity: string | null;
