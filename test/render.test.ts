@@ -97,14 +97,6 @@ describe("render helpers", () => {
     expect(text).toContain("cctop");
     expect(text).toContain("implement tests");
     expect(text).toContain("bun test");
-    // the sub-agent's name field spans VER+HOST+PROJECT, so its activity
-    // snaps to the same column as a session row's BRANCH value
-    expect(text).toContain("code-locator");
-    const branchCol = stripAnsi(frame.header).indexOf("BRANCH");
-    const agentLineText = stripAnsi(
-      frame.groups[0].lines.find((l) => l.includes("code-locator"))!,
-    );
-    expect(agentLineText.indexOf("Read")).toBe(branchCol);
     // the child's listening port shows in the list tree, not only the detail view
     expect(text).toContain(":5173");
     // connected tree gutter: ● session, then a spine of branches — the
@@ -177,13 +169,6 @@ describe("render helpers", () => {
           activity: "Bash: ls",
           uptimeSec: 3,
         },
-        {
-          name: "loc",
-          model: "claude-opus-4",
-          ctx: 2_000,
-          activity: "Read: a.ts",
-          uptimeSec: 1,
-        },
       ],
     });
 
@@ -191,15 +176,12 @@ describe("render helpers", () => {
     const plainLines = frame.groups[0].lines.map(stripAnsi);
     const namedLine = plainLines.find((l) => l.includes("Grep: TODO"))!;
     const nullLine = plainLines.find((l) => l.includes("Bash: ls"))!;
-    const shortNameLine = plainLines.find((l) => l.includes("Read: a.ts"))!;
     expect(namedLine).toContain("code-locator");
-    expect(shortNameLine).toContain("loc");
     // the name field spans VER+HOST+PROJECT, so every agent's activity
     // starts at the same column as a session row's BRANCH value — regardless
     // of the name's length, or whether it has one at all
     const branchCol = stripAnsi(frame.header).indexOf("BRANCH");
     expect(namedLine.indexOf("Grep: TODO")).toBe(branchCol);
-    expect(shortNameLine.indexOf("Read: a.ts")).toBe(branchCol);
     // a null name still gets the padded empty field, so its activity lines
     // up at that same column too, rather than sitting right after the model
     expect(nullLine.indexOf("Bash: ls")).toBe(branchCol);

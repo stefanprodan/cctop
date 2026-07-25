@@ -147,7 +147,6 @@ export const __test = {
   agentContext,
   liveSubagents,
   attachSubagentsInOrder,
-  pruneParentNamesCache,
   hostApp,
   cpuPercent,
   effectiveState,
