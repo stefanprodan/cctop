@@ -848,10 +848,30 @@ describe("sub-agent liveness", () => {
     },
   );
 
-  // A sub-agent's own transcript never carries its name — only the parent's
-  // does, as either a toolUseResult (agentId -> agentType) or an Agent/Task
-  // tool_use block (matched by the prompt it launched the agent with).
+  // A sub-agent's own transcript never carries its name: it comes from the
+  // metadata sidecar written beside it, or from the parent's transcript as
+  // either a toolUseResult (agentId -> agentType) or an Agent/Task tool_use
+  // block (matched by the prompt it launched the agent with).
   describe("sub-agent name resolution", () => {
+    // a workflow-launched agent is named only here — its parent records the
+    // Workflow call, never the agent — and it sits outside the flat
+    // <parent>/subagents/ layout the parent lookup is derived from
+    test("resolves a name from the agent's metadata sidecar", async () => {
+      const transcriptPath = join(dir, "meta.jsonl");
+      const agentPath = agentFile(
+        "agent-wf1.jsonl",
+        1_000,
+        [textTurn("hi")],
+        "meta",
+      );
+      writeFileSync(transcriptPath, jsonl([]));
+      writeFileSync(
+        agentPath.replace(/\.jsonl$/, ".meta.json"),
+        JSON.stringify({ agentType: "check-runner", spawnDepth: 1 }),
+      );
+      expect((await live(transcriptPath))[0]?.name).toBe("check-runner");
+    });
+
     test("resolves a name from a toolUseResult agentId", async () => {
       const transcriptPath = join(dir, "byid.jsonl");
       const agentId = "deadbeef01";

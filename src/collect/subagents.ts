@@ -110,6 +110,21 @@ async function parentAgentNames(path: string) {
   return { byId, ok };
 }
 
+// The agent's own type, from the metadata sidecar Claude Code writes next to
+// the transcript (<agent>.meta.json, at launch). The only name source for a
+// workflow-launched agent, whose parent transcript records the Workflow call
+// rather than the agent, and the more direct one for the rest: it names the
+// agent itself instead of a launch that has to be matched back to it.
+async function agentMetaName(path: string) {
+  try {
+    const meta = await Bun.file(path.replace(/\.jsonl$/, ".meta.json")).json();
+    const type = meta?.agentType;
+    return typeof type === "string" && type ? type : null;
+  } catch {
+    return null; // absent, unreadable, or not JSON — the parent still answers
+  }
+}
+
 // Cached per parent transcript path, keyed by mtime + size so an unresolved
 // agent (no toolUseResult yet) doesn't force a re-scan (and re-parse of every
 // tail line) on every refresh. An active session's transcript changes on
@@ -277,7 +292,8 @@ export async function liveSubagents(
     let info = agentCache.get(path);
     if (!info || info.mtimeMs !== mtimeMs) {
       // a resolved name never changes, so carry it forward across mtime-driven
-      // rebuilds rather than losing it (and re-scanning the parent transcript)
+      // rebuilds rather than losing it (and re-scanning the parent transcript);
+      // same for the sidecar verdict
       const prev = info;
       const { ok, ...ctx } = await agentContext(path);
       if (!ok) {
@@ -289,6 +305,7 @@ export async function liveSubagents(
         info = prev ?? { mtimeMs, name: null, ...ctx, running: true };
       } else {
         info = { mtimeMs, name: prev?.name ?? null, ...ctx };
+        info.metaChecked = prev?.metaChecked ?? false;
         agentCache.set(path, info);
       }
     }
@@ -296,9 +313,10 @@ export async function liveSubagents(
     if (age > SUBAGENT_LIVE_MS && !info.running) continue;
     live.push({ path, info, birthMs });
   }
-  // resolve names for whichever live agents still lack one, from each agent's
-  // own parent transcript (the session's for top-level agents, the launching
-  // agent's for nested ones), scanned at most once per call. A name can
+  // resolve names for whichever live agents still lack one: the agent's own
+  // metadata sidecar first, then its parent transcript (the session's for
+  // top-level agents, the launching agent's for nested ones) — scanned at
+  // most once per call — for agents launched without one. A name can
   // arrive late — a synchronous agent's toolUseResult lands only at
   // completion — so this retries on later refreshes for as long as it stays
   // unresolved.
@@ -308,6 +326,14 @@ export async function liveSubagents(
   >();
   for (const { path, info } of live) {
     if (info.name != null) continue;
+    // the sidecar is written at launch and never appears later, so one miss
+    // is final: remember it rather than paying a failed file open here on
+    // every refresh for as long as the agent stays nameless
+    if (!info.metaChecked) {
+      info.metaChecked = true;
+      info.name = await agentMetaName(path);
+      if (info.name) continue;
+    }
     // the launching transcript: the agent's own parent where the path gives
     // one (a nested agent's launcher, whose transcript is the only place its
     // name lives), the session's otherwise
