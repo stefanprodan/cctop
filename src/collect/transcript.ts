@@ -8,7 +8,7 @@
 
 import { readdirSync, statSync } from "node:fs";
 import { truncate } from "../format.ts";
-import { contextTokens, describeAssistant } from "./entry.ts";
+import { contextTokens, describeAssistant, firstText } from "./entry.ts";
 
 // The last prompt is a preview, not a faithful copy (the detail view shows the
 // transcript path for the real thing). Cap it so a pasted blob can't bloat the
@@ -91,13 +91,7 @@ export function noteEntry(details: Details, e: any) {
     details.lastTurn = describeAssistant(e.message) ?? undefined;
   }
   if (!details.prompt && e.type === "user" && !e.isMeta && !e.isSidechain) {
-    const c = e.message?.content;
-    let text =
-      typeof c === "string"
-        ? c
-        : Array.isArray(c)
-          ? c.find((b: any) => b.type === "text")?.text
-          : null;
+    let text = firstText(e.message?.content);
     if (text) {
       // slash commands arrive wrapped in <command-name>/<command-args>
       const cmd = text.match(/<command-name>([^<]*)<\/command-name>/);

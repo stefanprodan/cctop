@@ -306,7 +306,7 @@ export async function collectRows(filter: string | null): Promise<Instance[]> {
   );
   pruneTranscriptCache(liveTranscripts);
   pruneAgentCache(seenAgents);
-  pruneParentNamesCache(liveTranscripts);
+  pruneParentNamesCache(liveTranscripts, seenAgents);
 
   return rows
     .filter((r) => matchRow(r, filter))

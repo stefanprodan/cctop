@@ -26,6 +26,16 @@ export interface TranscriptEntry {
   message?: AssistantMessage;
 }
 
+// A message's text: string content as-is, otherwise the first text block.
+// Both prompt pickers (a session's last prompt and a sub-agent's first)
+// extract text this way, so it lives in this shared leaf.
+export function firstText(content: unknown): string | undefined {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content))
+    return content.find((b: any) => b?.type === "text")?.text;
+  return undefined;
+}
+
 // A turn's context window is fresh input plus both cache buckets. The main
 // scanner and the sub-agent scanner report the same number, so the arithmetic
 // lives in one place.
