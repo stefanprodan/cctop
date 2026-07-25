@@ -461,7 +461,9 @@ export function buildFrame(
   const frameHasNames = view.some((r) =>
     r.subagents.slice(0, MAX_SUBAGENT_ROWS).some((a) => a.name),
   );
-  const agentNameW = widths[verI] + 2 + widths[hostI] + 2 + widths[projectI];
+  const agentNameW =
+    widths[verI] +
+    ["host", "project"].reduce((sum, key) => sum + 2 + widths[colIdx[key]], 0);
   const agentLine = (a: AgentRow, isLast: boolean) => {
     const arm = agentArm(isLast);
     // the same cell text the width pass measured, so the two can't drift
