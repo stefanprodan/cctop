@@ -71,7 +71,7 @@ brew install stefanprodan/tap/cctop
 Or as a script with Bun (requires Bun, and pins an explicit release):
 
 ```sh
-bun install -g github:stefanprodan/cctop#v0.6.0
+bun install -g github:stefanprodan/cctop#v0.6.1
 ```
 
 ### Usage limits (opt-in)
@@ -116,7 +116,7 @@ brew upgrade stefanprodan/tap/cctop
 With Bun, reinstall pinned to the latest [release](https://github.com/stefanprodan/cctop/releases):
 
 ```sh
-bun rm -g cctop; bun install -g github:stefanprodan/cctop#v0.6.0
+bun rm -g cctop; bun install -g github:stefanprodan/cctop#v0.6.1
 ```
 
 ### Uninstall
