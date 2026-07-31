@@ -18,7 +18,8 @@ waiting for input.
 - **Live TUI** — navigate with the keyboard, open a per-session detail view, and
   filter and sort on the fly; piped or run with `--once` it prints a single frame.
   The sort mode, refresh interval, and notifications toggle are remembered
-  across restarts.
+  across restarts, and the visible columns are configurable
+  (see [Customising the columns](#customising-the-columns)).
 - **Get pinged when a session needs you** *(opt-in)* — press `n` and cctop
   rings the terminal bell and raises a desktop notification (OSC 9, supported
   by iTerm2, Ghostty, kitty, WezTerm, Windows Terminal) whenever a busy
@@ -193,6 +194,38 @@ cctop --watch=0.5  # refresh twice a second
 cctop --once       # single frame, then exit
 cctop --json       # machine-readable snapshot
 ```
+
+### Customising the columns
+
+The first seven columns — the status dot, `PID`, `MEM`, `CPU`, `UP`, `CTX`,
+and `MODEL` — are the table's skeleton (the sub-agent and sub-process tree
+aligns under them), so they are always shown. The rest can be hidden or
+reordered by listing the ones you want, in display order, under `columns` in
+`~/.claude/cctop/settings.json`:
+
+```json
+{
+  "columns": ["project", "branch", "last-action", "prompt"]
+}
+```
+
+The configurable columns, in their default order:
+
+| Name          | Column   | Shows                                    |
+|---------------|----------|------------------------------------------|
+| `version`     | `VER`    | the Claude Code version                  |
+| `host`        | `HOST`   | the host app (terminal or IDE)           |
+| `project`     | `PROJECT`| the project directory name               |
+| `branch`      | `BRANCH` | the git branch                           |
+| `last-action` | `LAST`   | time since the session's last activity   |
+| `prompt`      | `PROMPT` | the last prompt (or the session name)    |
+
+The example above hides `VER` and `HOST` — handy when every session shows the
+same Claude version and terminal, freeing their width for `PROMPT`. Removing
+the `columns` key restores the default (all columns); unknown names are
+ignored. The setting applies to the TUI and to single-frame output alike
+(`--once`, piped), while `--json` always carries every field — and nothing is
+lost either way: the detail view (`enter`) still shows everything.
 
 ## Contributing
 

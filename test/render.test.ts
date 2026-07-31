@@ -107,6 +107,19 @@ describe("render helpers", () => {
     expect(text).toContain("└─");
   });
 
+  test("caps a runaway host value instead of widening the column", () => {
+    const long =
+      "chrome --profile-directory=Profile 1 --app-id=abcdefghijklmnop";
+    const frame = buildFrame([baseRow({ host: long })], 200);
+    const text = stripAnsi(frame.groups[0].lines[0]);
+    expect(text).not.toContain(long);
+    expect(text).toContain(`${long.slice(0, 23)}…`); // truncated to MAX_HOST_W
+    // the detail view still shows the full value
+    expect(
+      stripAnsi(renderDetail(baseRow({ host: long }), 200).join("\n")),
+    ).toContain(long);
+  });
+
   test("caps sub-agent and sub-process rows in list view; detail shows all", () => {
     const subagents = Array.from({ length: 12 }, (_, i) => ({
       name: null,
@@ -809,5 +822,103 @@ describe("newestBell", () => {
   test("returns null when nothing is waiting", () => {
     expect(newestBell([])).toBeNull();
     expect(newestBell([at("a", null), at("b", null)])).toBeNull();
+  });
+});
+
+// The visible column set from settings.json: the fixed head (state..model) is
+// the tree layout's skeleton and always renders; the optional tail can be
+// hidden and reordered. Absent config must stay bit-identical to today.
+describe("configurable columns", () => {
+  const header = (columns?: string[] | null) =>
+    stripAnsi(buildFrame([baseRow()], 200, null, null, columns).header);
+  const rowText = (columns?: string[] | null) =>
+    stripAnsi(
+      buildFrame([baseRow()], 200, null, null, columns).groups[0].lines[0],
+    );
+
+  test("null keeps the default set and order", () => {
+    expect(header(null)).toBe(header(undefined));
+    for (const h of ["PID", "MODEL", "VER", "HOST", "PROJECT", "BRANCH"])
+      expect(header(null)).toContain(h);
+  });
+
+  test("hides the listed-out columns, keeping the fixed head", () => {
+    const h = header(["project", "branch", "last-action", "prompt"]);
+    expect(h).not.toContain("VER");
+    expect(h).not.toContain("HOST");
+    expect(h).toContain("PROJECT");
+    expect(h).toContain("MODEL"); // fixed head untouched
+    const r = rowText(["project", "branch", "last-action", "prompt"]);
+    expect(r).not.toContain("2.1.177"); // version value gone with its column
+    expect(r).not.toContain("Ghostty"); // host value too
+    expect(r).toContain("implement tests");
+  });
+
+  test("honors the configured order", () => {
+    const h = header(["branch", "project", "prompt"]);
+    expect(h.indexOf("BRANCH")).toBeGreaterThan(-1);
+    expect(h.indexOf("BRANCH")).toBeLessThan(h.indexOf("PROJECT"));
+    expect(h.indexOf("PROJECT")).toBeLessThan(h.indexOf("PROMPT"));
+  });
+
+  test("drops unknown names and duplicates", () => {
+    const h = header(["bogus", "prompt", "prompt"]);
+    expect(h).not.toContain("bogus");
+    expect(h.match(/PROMPT/g)?.length).toBe(1);
+  });
+
+  test("an empty list ends the table at the fixed head", () => {
+    const h = header([]);
+    expect(h).toContain("MODEL");
+    for (const gone of ["VER", "HOST", "PROJECT", "BRANCH", "PROMPT"])
+      expect(h).not.toContain(gone);
+  });
+
+  test("a hidden column frees its width for the prompt", () => {
+    // the host is capped at MAX_HOST_W in the cells, so hiding VER + HOST
+    // frees their capped widths plus gaps (~35 cols), not the raw 78 chars
+    const longHost = baseRow({
+      host: "chrome --profile-directory=Profile 1 --app-id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      prompt: "p".repeat(200),
+    });
+    const width = 160;
+    const promptLen = (columns: string[] | null) => {
+      const line = stripAnsi(
+        buildFrame([longHost], width, null, null, columns).groups[0].lines[0],
+      );
+      return (line.match(/p{5,}/) ?? [""])[0].length;
+    };
+    expect(
+      promptLen(["project", "branch", "last-action", "prompt"]),
+    ).toBeGreaterThan(promptLen(null) + 30);
+  });
+
+  test("agent names survive hiding the columns they span", () => {
+    const row = baseRow({
+      subagents: [
+        {
+          name: "code-locator",
+          model: "claude-sonnet-4",
+          ctx: 42_000,
+          activity: "Read",
+          uptimeSec: 65,
+        },
+      ],
+    });
+    const frame = buildFrame([row], 200, null, null, ["prompt"]);
+    const text = stripAnsi(frame.groups[0].lines.join("\n"));
+    expect(text).toContain("code-locator");
+    expect(text).toContain("Read");
+  });
+
+  test("prompt stays capped when reordered off the final slot", () => {
+    const width = 120;
+    const row = baseRow({ prompt: "p".repeat(300) });
+    const line = stripAnsi(
+      buildFrame([row], width, null, null, ["prompt", "branch"]).groups[0]
+        .lines[0],
+    );
+    expect(visLen(line.trimEnd())).toBeLessThanOrEqual(width);
+    expect(line).toContain("main"); // branch still renders after the prompt
   });
 });

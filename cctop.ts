@@ -177,10 +177,16 @@ if (asJson) {
         : "no Claude Code sessions running",
     );
   } else {
+    // the persisted column set applies to single-frame output too — the point
+    // is making the table fit, and that holds for `cctop | cat` as much as the
+    // TUI (--json is untouched: it always carries every field)
+    const [usage, settings] = await Promise.all([readUsage(), readSettings()]);
     const frame = buildFrame(
       rows,
       process.stdout.columns ?? 200,
-      await readUsage(),
+      usage,
+      null,
+      settings.columns,
     );
     console.log(
       [
@@ -207,6 +213,7 @@ if (asJson) {
     watchSecs: watchSecs ?? persisted ?? DEFAULT_WATCH_SECS,
     sort: settings.sort,
     notify: settings.notify ?? false,
+    columns: settings.columns,
     version: VERSION,
   });
 }

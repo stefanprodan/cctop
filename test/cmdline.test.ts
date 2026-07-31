@@ -86,6 +86,28 @@ describe("command line parsing (parseCommand)", () => {
     ).toEqual({ name: "Electron", sub: null });
   });
 
+  // chrome rewrites its cmdline as ONE space-separated string (no NULs), so
+  // the whole command arrives as argv[0] and the flags land in the basename —
+  // uncut, HOST reads "chrome --profile-directory=Profile 1 --app-id=…" and
+  // that one row sets the column width for the entire table (issue #49)
+  test("cuts rewritten-cmdline flags out of the name", () => {
+    expect(
+      parseCommand([
+        "/opt/google/chrome/chrome --profile-directory=Profile 1 --app-id=mp…",
+      ]),
+    ).toEqual({ name: "chrome", sub: null });
+  });
+
+  // the flag cut is " -", not the first space: a macOS bundle binary may
+  // carry a space in its own basename and must keep it
+  test("keeps a spaced binary name intact", () => {
+    expect(
+      parseCommand([
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      ]),
+    ).toEqual({ name: "Google Chrome", sub: null });
+  });
+
   // Claude's helpers are not the only processes that rewrite their title, and
   // the name this yields is what the HOST column and the sub-process rows
   // display — so the common ones are pinned. The trailing colon is punctuation,

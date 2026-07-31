@@ -1846,7 +1846,7 @@ describe("persisted settings (settings.json)", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  const empty = { watchSecs: null, sort: null, notify: null };
+  const empty = { watchSecs: null, sort: null, notify: null, columns: null };
 
   test("parseSettings nulls missing or ill-typed fields", () => {
     expect(
@@ -1855,6 +1855,7 @@ describe("persisted settings (settings.json)", () => {
       watchSecs: 2.5,
       sort: "cpu",
       notify: true,
+      columns: null,
     });
     expect(__test.parseSettings({})).toEqual(empty);
     expect(__test.parseSettings(null)).toEqual(empty);
@@ -1870,6 +1871,42 @@ describe("persisted settings (settings.json)", () => {
     expect(__test.parseSettings({ notify: false })).toEqual({
       ...empty,
       notify: false,
+    });
+  });
+
+  test("parseSettings keeps the columns list, dropping non-string entries", () => {
+    expect(
+      __test.parseSettings({ columns: ["host", "project", "prompt"] }),
+    ).toEqual({ ...empty, columns: ["host", "project", "prompt"] });
+    // an explicit [] means "hide every optional column", not "unset"
+    expect(__test.parseSettings({ columns: [] })).toEqual({
+      ...empty,
+      columns: [],
+    });
+    // non-string / empty entries are dropped, a non-array is unset
+    expect(__test.parseSettings({ columns: ["branch", 7, null, ""] })).toEqual({
+      ...empty,
+      columns: ["branch"],
+    });
+    expect(__test.parseSettings({ columns: "host" })).toEqual(empty);
+    // unknown names survive parsing — buildFrame drops them (forward compat)
+    expect(__test.parseSettings({ columns: ["bogus"] })).toEqual({
+      ...empty,
+      columns: ["bogus"],
+    });
+  });
+
+  test("save preserves a hand-edited columns list across patches", async () => {
+    const f = join(dir, "columns.json");
+    // simulate the hand-edit: columns lands in the file out-of-band
+    writeFileSync(f, JSON.stringify({ columns: ["project", "prompt"] }));
+    // a TUI-driven patch (sort/notify) must not clobber it
+    await saveSettings({ sort: "cpu", notify: true }, f);
+    expect(await readSettings(f)).toEqual({
+      ...empty,
+      sort: "cpu",
+      notify: true,
+      columns: ["project", "prompt"],
     });
   });
 

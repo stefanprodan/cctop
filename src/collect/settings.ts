@@ -16,6 +16,12 @@ export interface Settings {
   watchSecs: number | null; // refresh interval in seconds
   sort: string | null; // sort-mode name (matches SORTS in app.ts)
   notify: boolean | null; // ring when a busy session needs input (null = off)
+  // Visible optional columns, in display order (null = default set). Hand-edited
+  // — no TUI action writes it, but the save merge preserves it. Only checked to
+  // be strings here: the known column names live in render.ts (importing them
+  // would cycle render → collect → settings), and buildFrame dropping unknown
+  // names keeps a file written for a newer cctop working on an older one.
+  columns: string[] | null;
 }
 
 const SETTINGS_FILE = `${CLAUDE_DIR}/cctop/settings.json`;
@@ -27,10 +33,17 @@ export function parseSettings(raw: any): Settings {
     typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null;
   const str = (v: unknown) => (typeof v === "string" && v !== "" ? v : null);
   const bool = (v: unknown) => (typeof v === "boolean" ? v : null);
+  // an explicit [] is kept (= hide every optional column), unlike a missing or
+  // ill-typed value which means "default set"
+  const strArr = (v: unknown) =>
+    Array.isArray(v)
+      ? v.filter((s): s is string => typeof s === "string" && s !== "")
+      : null;
   return {
     watchSecs: num(raw?.watchSecs),
     sort: str(raw?.sort),
     notify: bool(raw?.notify),
+    columns: strArr(raw?.columns),
   };
 }
 
@@ -41,7 +54,7 @@ export async function readSettings(
     return parseSettings(await Bun.file(file).json());
   } catch {
     // absent, unreadable, or corrupt
-    return { watchSecs: null, sort: null, notify: null };
+    return { watchSecs: null, sort: null, notify: null, columns: null };
   }
 }
 
@@ -56,10 +69,11 @@ export async function saveSettings(
 ): Promise<void> {
   try {
     const merged = { ...(await readSettings(file)), ...patch };
-    const out: Record<string, number | string | boolean> = {};
+    const out: Record<string, number | string | boolean | string[]> = {};
     if (merged.watchSecs != null) out.watchSecs = merged.watchSecs;
     if (merged.sort != null) out.sort = merged.sort;
     if (merged.notify != null) out.notify = merged.notify;
+    if (merged.columns != null) out.columns = merged.columns;
     mkdirSync(dirname(file), { recursive: true });
     const tmp = `${file}.${process.pid}.tmp`;
     await Bun.write(tmp, JSON.stringify(out));
