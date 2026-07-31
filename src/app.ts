@@ -115,6 +115,7 @@ export interface AppOptions {
   watchSecs: number;
   sort: string | null; // persisted sort-mode name; unknown/null = default
   notify: boolean; // persisted notifications toggle (default off)
+  columns: string[] | null; // persisted visible-column set; null = default
   version: string;
 }
 
@@ -873,6 +874,7 @@ export async function runApp(opts: AppOptions): Promise<void> {
       cols - GUTTER.length,
       state.usage,
       state.net,
+      opts.columns,
     );
     const selIdx = rows.findIndex((r) => rowKey(r) === state.selectedKey);
     const body = windowGroups(frame.groups, selIdx, region);
@@ -1023,6 +1025,7 @@ export async function runApp(opts: AppOptions): Promise<void> {
         (out.columns || 200) - GUTTER.length,
         state.usage,
         state.net,
+        opts.columns,
       ).summary;
     }
     return buildFrame(
@@ -1030,6 +1033,7 @@ export async function runApp(opts: AppOptions): Promise<void> {
       (out.columns || 200) - GUTTER.length,
       state.usage,
       state.net,
+      opts.columns,
     ).summary;
   }
 

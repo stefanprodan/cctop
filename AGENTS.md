@@ -19,7 +19,8 @@ exits, while `--json` prints one JSON snapshot and exits.
   writes are its own files under `~/.claude/cctop/`: the usage cache
   (`usage.json`, only under `--capture-usage`) and the persisted TUI preferences
   (`settings.json`, the refresh interval, sort mode, and notifications toggle,
-  written only when the user changes them); the only thing it ever does to
+  written only when the user changes them; the file also carries the hand-edited
+  `columns` list, which cctop only ever reads — the save merge preserves it); the only thing it ever does to
   another process is send a signal, and only on an explicit user action (`x` →
   SIGTERM a session; `f` → SIGTERM a session's orphaned dev-server processes to
   free their ports). Preserve this property. Separate from all of that is one
@@ -126,6 +127,13 @@ its own usage cache `~/.claude/cctop/usage.json` (only under `--capture-usage`)
 and its preferences `~/.claude/cctop/settings.json` (refresh interval + sort
 mode + notifications toggle; written when an explicit `--watch` differs from
 the persisted value and when `s` cycles the sort or `n` toggles notifications).
+The same file carries the optional `columns` key — the visible column set, an
+ordered list of the configurable column names (`version`, `host`, `project`,
+`branch`, `last-action`, `prompt`; the first seven columns are the tree
+layout's skeleton and never configurable). It is hand-edited only: no TUI
+action writes it, `saveSettings`'s merge preserves it, and `buildFrame`
+silently drops unknown names (the file may come from a newer cctop). It
+applies to the TUI and the single-frame path alike; `--json` is unaffected.
 
 The history view (`h`, TUI-only) is the one place that full-scans *every*
 transcript under `projects/` — session files and the `<id>/subagents/` tree

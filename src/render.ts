@@ -63,7 +63,12 @@ interface Col {
   align: "l" | "r";
   min?: number;
 }
-const cols: Col[] = [
+// The fixed head of the table — not configurable, and not an arbitrary "first
+// seven": these columns are the tree layout's skeleton. The sub-agent arm spans
+// state+pid+mem+cpu, sub-agents borrow up/ctx/model for their own stats, and
+// sub-process rows align under pid/mem/cpu/up. Removing any of them would
+// break every child row in the frame.
+const FIXED_COLS: Col[] = [
   // first column is the tree gutter: a colored status dot (●) on session rows,
   // then a connected spine of branches for its children. Sub-processes branch
   // with ├─/└─ into their stats; sub-agents have no stats columns, so their
@@ -76,25 +81,42 @@ const cols: Col[] = [
   { key: "up", header: "UP", align: "r", min: 3 },
   { key: "ctx", header: "CTX", align: "r", min: 4 }, // up to "999k"
   { key: "model", header: "MODEL", align: "l" },
-  { key: "ver", header: "VER", align: "l" },
+];
+
+// The configurable tail: settings.json's `columns` lists the visible ones in
+// display order (see resolveCols). Keys are the names users write in the
+// config, so they are spelled out rather than abbreviated.
+const OPTIONAL_COLS: Col[] = [
+  { key: "version", header: "VER", align: "l" },
   { key: "host", header: "HOST", align: "l" },
   { key: "project", header: "PROJECT", align: "l" },
   { key: "branch", header: "BRANCH", align: "l" },
-  { key: "last", header: "LAST", align: "r", min: 3 },
+  { key: "last-action", header: "LAST", align: "r", min: 3 },
   { key: "prompt", header: "PROMPT", align: "l" },
 ];
+
+// The effective column table for a frame: the fixed head, then the configured
+// optional columns in the order given (null = all, default order). Unknown
+// names are dropped rather than erroring — the file is hand-edited and may
+// come from a newer cctop that knows more columns; duplicates keep the first.
+function resolveCols(columns?: string[] | null): Col[] {
+  if (columns == null) return [...FIXED_COLS, ...OPTIONAL_COLS];
+  const seen = new Set<string>();
+  const tail: Col[] = [];
+  for (const key of columns) {
+    const col = OPTIONAL_COLS.find((c) => c.key === key);
+    if (col && !seen.has(key)) {
+      seen.add(key);
+      tail.push(col);
+    }
+  }
+  return [...FIXED_COLS, ...tail];
+}
 
 // pid/mem/cpu/up are shared between a session and its sub-process rows,
 // so these columns align across both and their widths consider children
 const TREE_COLS = ["pid", "mem", "cpu", "up"] as const;
 type TreeCol = (typeof TREE_COLS)[number];
-
-// column key -> its index in `cols`, built once so the per-row renderers don't
-// re-scan with findIndex on every line
-const colIdx: Record<string, number> = {};
-cols.forEach((c, i) => {
-  colIdx[c.key] = i;
-});
 
 // In list view a single session must not crowd the others off-screen, so cap
 // how many sub-agent and sub-process rows it shows; the overflow is summarized
@@ -249,14 +271,23 @@ export interface Frame {
 // width available to the table body (the caller subtracts any left gutter).
 // `net` is the machine-wide throughput (host-wide, not Claude-only); when
 // present it appends a ↓/↑ rate to the Resources line. Single-frame callers
-// (--once/--json) pass nothing, so the line stays unchanged there.
+// (--once/--json) pass nothing, so the line stays unchanged there. `columns`
+// is settings.json's visible-column list (see resolveCols); null = default.
 export function buildFrame(
   rows: Instance[],
   termCols: number,
   usage?: Usage | null,
   net?: NetRate | null,
+  columns?: string[] | null,
 ): Frame {
   const nowMs = Date.now();
+  const cols = resolveCols(columns);
+  // column key -> its index in `cols`, built once per frame so the per-row
+  // renderers don't re-scan with findIndex on every line
+  const colIdx: Record<string, number> = {};
+  cols.forEach((c, i) => {
+    colIdx[c.key] = i;
+  });
   const view = rows.map((r) => ({
     raw: r,
     ringing: isRinging(r, nowMs),
@@ -268,11 +299,11 @@ export function buildFrame(
       state: r.state,
       ctx: r.contextTokens ? formatTokens(r.contextTokens) : "-",
       model: safe(shortModel(r.model)),
-      ver: safe(r.version),
+      version: safe(r.version),
       host: safe(r.host),
       project: safe(shortProject(r.project)),
       branch: safe(r.branch),
-      last: r.lastMs ? formatDuration((nowMs - r.lastMs) / 1000) : "-",
+      "last-action": r.lastMs ? formatDuration((nowMs - r.lastMs) / 1000) : "-",
       prompt: isNew(r) ? "new session" : safe(r.prompt ?? r.sessionName),
     } as Cells,
     children: r.children.map(subProcCells),
@@ -389,11 +420,16 @@ export function buildFrame(
           w = Math.max(w, agentCell(key, a).length);
     return w;
   });
-  // the trailing prompt column absorbs whatever terminal width is left
+  // the prompt column absorbs whatever terminal width is left, wherever the
+  // configured order puts it — prompts are routinely longer than a terminal,
+  // so an uncapped mid-table prompt would overflow every row. With prompt
+  // hidden, the final column inherits the flex role so the table still ends
+  // at the terminal edge.
+  const flexI = colIdx.prompt ?? cols.length - 1;
   const fixed =
-    widths.slice(0, -1).reduce((a, b) => a + b, 0) + 2 * (cols.length - 1);
+    widths.reduce((a, b) => a + b, 0) - widths[flexI] + 2 * (cols.length - 1);
   const avail = Math.max(termCols - fixed, 12);
-  widths[widths.length - 1] = Math.min(widths.at(-1)!, avail);
+  widths[flexI] = Math.min(widths[flexI], avail);
 
   const header = cols
     .map(
@@ -406,7 +442,7 @@ export function buildFrame(
     cols
       .map(({ key, align }, i) => {
         let plain = cells[key];
-        if (i === cols.length - 1 && plain.length > widths[i])
+        if (i === flexI && plain.length > widths[i])
           plain = truncate(plain, widths[i]);
         return pad(
           styleCell(key, plain, raw, ringing),
@@ -445,7 +481,6 @@ export function buildFrame(
   const ctxI = colIdx.ctx;
   const modelI = colIdx.model;
   const upI = colIdx.up;
-  const verI = colIdx.ver;
   // the arm a sub-agent row draws: spans the gutter and the empty pid/mem/cpu
   // columns (with their separators), reaching the UP column where its stats begin
   const agentArmW =
@@ -463,12 +498,23 @@ export function buildFrame(
   // up with it too. The field only exists at all when some visible agent in
   // the frame has a name — an all-nameless frame keeps the activity right
   // after the model column instead of shifting it across an empty field.
+  // Any of the three columns may be hidden — the span covers the visible
+  // ones (out of default order, it degrades to just a reserved width); with
+  // all three hidden the field falls back to fitting the widest name, so a
+  // named agent can't lose its name to a column setting.
   const frameHasNames = view.some((r) =>
     r.subagents.slice(0, MAX_SUBAGENT_ROWS).some((a) => agentDisplayName(a)),
   );
-  const agentNameW =
-    widths[verI] +
-    ["host", "project"].reduce((sum, key) => sum + 2 + widths[colIdx[key]], 0);
+  const AGENT_NAME_FALLBACK_W = 20;
+  let agentNameW = ["version", "host", "project"]
+    .filter((key) => colIdx[key] != null)
+    .reduce((sum, key, i) => sum + (i ? 2 : 0) + widths[colIdx[key]], 0);
+  if (!agentNameW && frameHasNames) {
+    for (const r of view)
+      for (const a of r.subagents.slice(0, MAX_SUBAGENT_ROWS))
+        agentNameW = Math.max(agentNameW, visLen(agentDisplayName(a)));
+    agentNameW = Math.min(agentNameW, AGENT_NAME_FALLBACK_W);
+  }
   const agentLine = (a: AgentRow, isLast: boolean) => {
     const arm = agentArm(isLast);
     // the same cell text the width pass measured, so the two can't drift
