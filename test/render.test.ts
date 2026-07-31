@@ -107,6 +107,19 @@ describe("render helpers", () => {
     expect(text).toContain("└─");
   });
 
+  test("caps a runaway host value instead of widening the column", () => {
+    const long =
+      "chrome --profile-directory=Profile 1 --app-id=abcdefghijklmnop";
+    const frame = buildFrame([baseRow({ host: long })], 200);
+    const text = stripAnsi(frame.groups[0].lines[0]);
+    expect(text).not.toContain(long);
+    expect(text).toContain(`${long.slice(0, 23)}…`); // truncated to MAX_HOST_W
+    // the detail view still shows the full value
+    expect(
+      stripAnsi(renderDetail(baseRow({ host: long }), 200).join("\n")),
+    ).toContain(long);
+  });
+
   test("caps sub-agent and sub-process rows in list view; detail shows all", () => {
     const subagents = Array.from({ length: 12 }, (_, i) => ({
       name: null,
@@ -862,6 +875,8 @@ describe("configurable columns", () => {
   });
 
   test("a hidden column frees its width for the prompt", () => {
+    // the host is capped at MAX_HOST_W in the cells, so hiding VER + HOST
+    // frees their capped widths plus gaps (~35 cols), not the raw 78 chars
     const longHost = baseRow({
       host: "chrome --profile-directory=Profile 1 --app-id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       prompt: "p".repeat(200),
@@ -875,7 +890,7 @@ describe("configurable columns", () => {
     };
     expect(
       promptLen(["project", "branch", "last-action", "prompt"]),
-    ).toBeGreaterThan(promptLen(null) + 40);
+    ).toBeGreaterThan(promptLen(null) + 30);
   });
 
   test("agent names survive hiding the columns they span", () => {

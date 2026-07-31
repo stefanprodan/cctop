@@ -60,6 +60,14 @@ export function parseCommand(argv: string[]): Command {
   const sub =
     next && !next.startsWith("-") && !next.startsWith("/") ? next : null;
   // a title's program name often carries a trailing colon ("tmux: server",
-  // "nginx: master process …") — it is punctuation, not part of the name
-  return { name: cmd.split("/").pop()?.replace(/:$/, "") || null, sub };
+  // "nginx: master process …") — it is punctuation, not part of the name.
+  // A process that rewrites its cmdline as one space-separated string (chrome
+  // does) folds its flags into the basename ("chrome --profile-directory=…
+  // --app-id=…" — 78 chars into the HOST column); a space+dash starts flags,
+  // never a program name, so cut there. Specifically " -", not the first
+  // space: macOS bundle binaries legitimately hold one ("Google Chrome").
+  return {
+    name: cmd.split("/").pop()?.split(/ -/)[0]?.replace(/:$/, "") || null,
+    sub,
+  };
 }

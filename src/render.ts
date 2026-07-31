@@ -124,6 +124,13 @@ type TreeCol = (typeof TREE_COLS)[number];
 const MAX_SUBAGENT_ROWS = 8;
 const MAX_CHILD_ROWS = 8;
 
+// HOST is the one column whose value is arbitrary process-derived text (a
+// rewritten process title can be anything), so a single weird row must not set
+// the column width for the whole table. Capping the cell text caps the column
+// — widths derive from cells. Real hosts fit ("gnome-terminal-server" is 21);
+// the detail view still shows the full value.
+const MAX_HOST_W = 24;
+
 type Cells = Record<string, string>;
 const safe = (s: string | null | undefined, fallback = "-") =>
   sanitizeDisplay(s ?? fallback);
@@ -300,7 +307,7 @@ export function buildFrame(
       ctx: r.contextTokens ? formatTokens(r.contextTokens) : "-",
       model: safe(shortModel(r.model)),
       version: safe(r.version),
-      host: safe(r.host),
+      host: truncate(safe(r.host), MAX_HOST_W),
       project: safe(shortProject(r.project)),
       branch: safe(r.branch),
       "last-action": r.lastMs ? formatDuration((nowMs - r.lastMs) / 1000) : "-",
