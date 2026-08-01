@@ -1445,16 +1445,23 @@ describe("registry ownership (sessionOwns)", () => {
   test("rejects an entry left behind by a reused pid", () => {
     // the process started an hour after the entry was written: a different one
     expect(__test.sessionOwns(entry, startSec + 3600, nowMs)).toBe(false);
-    expect(__test.sessionOwns(entry, startSec - 3600, nowMs)).toBe(false);
   });
 
-  // the tolerance is a boundary, so it is asserted at the boundary — either side
-  // of 60s, in both directions
+  // `claude --bg` hands its job to a spare the daemon pre-spawned, so the entry
+  // is stamped when the job was claimed while the process has been parked since
+  // the pool filled. The gap is unbounded — a warm pool can sit idle for hours
+  // — and matching the two cost every background session its row.
+  test("accepts a session claimed by a long-parked spare process", () => {
+    expect(__test.sessionOwns(entry, startSec - 3600, nowMs)).toBe(true);
+    expect(__test.sessionOwns(entry, startSec - 86_400, nowMs)).toBe(true);
+  });
+
+  // the tolerance is a boundary, so it is asserted at the boundary. Only the
+  // entry-older-than-its-process side has one: a pid is never recycled backwards
+  // in time, so that is the direction a stale entry can only come from.
   test("holds the tolerance to exactly the slack it allows", () => {
     expect(__test.sessionOwns(entry, startSec + 60, nowMs)).toBe(true);
     expect(__test.sessionOwns(entry, startSec + 61, nowMs)).toBe(false);
-    expect(__test.sessionOwns(entry, startSec - 60, nowMs)).toBe(true);
-    expect(__test.sessionOwns(entry, startSec - 61, nowMs)).toBe(false);
   });
 
   test("rejects an entry stamped in the future", () => {
@@ -1672,8 +1679,44 @@ describe("claude process identification", () => {
     );
   });
 
-  // only a helper carries a subcommand: a session is bare, takes flags (which
-  // never become `sub`), or is handed a prompt as its first argument
+  // The job-control clients drive background sessions without being one:
+  // `claude agents` is the monitor TUI, `attach`/`logs`/`stop` talk to a job the
+  // daemon runs elsewhere. None writes a registry entry, so each one listed
+  // wears whatever transcript its cwd last touched — which is how `claude
+  // agents` rendered as a background session whose name failed to resolve.
+  test("rejects the job-control clients for background sessions", () => {
+    for (const sub of ["agents", "attach", "logs", "stop"]) {
+      expect(__test.isClaudeProc(proc("claude", null, sub))).toBe(false);
+      expect(isClaudeHelper(proc("claude", null, sub))).toBe(true);
+    }
+  });
+
+  // The rest of `claude --help`'s subcommand list: management commands that
+  // exit without ever opening a session.
+  test("rejects the management subcommands", () => {
+    const subs = [
+      "auth",
+      "auto-mode",
+      "doctor",
+      "gateway",
+      "install",
+      "plugin",
+      "plugins",
+      "project",
+      "setup-token",
+      "ultrareview",
+      "update",
+      "upgrade",
+    ];
+    for (const sub of subs)
+      expect(__test.isClaudeProc(proc("claude", null, sub))).toBe(false);
+  });
+
+  // A session is bare, takes flags (which never become `sub`), or is handed a
+  // prompt as its first argument — and a prompt is not a subcommand, however
+  // much a one-word one may look like one. The collision that remains ("claude
+  // doctor" as a prompt) is harmless: every real session writes a registry
+  // entry, so candidate selection admits it through the registry regardless.
   test("keeps a session that carries flags or a prompt", () => {
     expect(__test.isClaudeProc(proc("claude", null, null))).toBe(true);
     expect(__test.isClaudeProc(proc("claude", null, "fix"))).toBe(true);

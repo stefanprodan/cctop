@@ -110,14 +110,20 @@ const effectiveState = (
 const transcriptOf = (s: Session) =>
   `${projectDir(s.cwd)}/${s.sessionId}.jsonl`;
 
-// Does this registry entry really belong to this process? A start time that
-// doesn't match the entry's means the PID was reused, or the entry is malformed
-// — either way the row would wear another session's identity. The tolerance
-// absorbs the lag between a session starting and writing itself down.
+// Does this registry entry really belong to this process? An entry stamped
+// before its process existed is one a reused PID inherited, or a malformed one
+// — either way the row would wear a dead session's identity.
+//
+// One-sided on purpose. A session may begin long after its process did:
+// `claude --bg` hands its job to a *pre-spawned* spare (`claude bg-spare`) from
+// the daemon's warm pool, so `startedAt` is when the job was claimed while the
+// process has been parked since the pool filled — a gap of hours. The reverse
+// can't happen (a pid is never recycled backwards in time), so that is the only
+// direction staleness comes from, and the slack there absorbs clock skew alone.
 const CLOCK_SKEW_MS = 60_000;
 const sessionOwns = (s: Session, startSec: number, nowMs: number) =>
   !!startSec &&
-  Math.abs(startSec * 1000 - s.startedAt) <= CLOCK_SKEW_MS &&
+  s.startedAt >= startSec * 1000 - CLOCK_SKEW_MS &&
   s.startedAt <= nowMs + CLOCK_SKEW_MS;
 
 // Does a row match the filter? Searches project, host, branch, model, and
@@ -173,18 +179,25 @@ export async function collectRows(filter: string | null): Promise<Instance[]> {
   // (not just the heuristic-detected ones) and never double-list a session
   const candidatePids = new Set(candidates.map((p) => p.pid));
 
-  // Pass 1: resolve each candidate's registry entry, and with it the set of
+  // Pass 1: resolve each candidate's registry entry, then the set of
   // transcripts that are spoken for — both before any transcript is read, so no
   // registry-less process can adopt one and render as a duplicate of the session
   // that owns it.
   const sessionFor = new Map<number, Session | null>();
-  const claimed = new Set<string>();
   for (const p of candidates) {
     const s = sessions.get(p.pid) ?? null;
-    const owned = s && sessionOwns(s, p.startSec, nowMs) ? s : null;
-    sessionFor.set(p.pid, owned);
-    if (owned) claimed.add(transcriptOf(owned));
+    sessionFor.set(p.pid, s && sessionOwns(s, p.startSec, nowMs) ? s : null);
   }
+
+  // Claims cover every live registry entry, not just the ones that resolved
+  // onto a candidate row — the two sets differ, since an entry can belong to a
+  // process cctop does not row (a helper, or one whose ownership check fails),
+  // and those were exactly the transcripts a registry-less `claude` in the same
+  // project would adopt. Entries whose pid has left the table are skipped:
+  // those transcripts really are free, and are what the fallback is for.
+  const claimed = new Set<string>();
+  for (const s of sessions.values())
+    if (byPid.has(s.pid)) claimed.add(transcriptOf(s));
 
   const childrenOf = indexChildren(procs);
 
