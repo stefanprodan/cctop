@@ -8,27 +8,50 @@
 
 import type { Proc } from "../proc.ts";
 
-// Claude Code ships processes that are not sessions but are indistinguishable
-// from one by name and executable: the background daemon and the pty/spare
-// hosts it spawns (`claude daemon run`, `claude bg-pty-host`, `claude
-// bg-spare`), plus management commands like `claude mcp`. They are named
-// "claude" and exec the same versioned binary a session does.
+// Claude Code ships processes that are not sessions but are named "claude" and
+// exec the same versioned binary one does: the background daemon and the pty/
+// spare hosts it spawns (`claude daemon run`, `bg-pty-host`, `bg-spare`), the
+// job-control clients, and the management commands listed below.
 //
 // Letting one through is worse than an extra row: a helper writes no session
 // registry entry, so its row falls back to the newest transcript in its cwd —
-// and a bg-pty-host sits in the *session's* project directory, so it adopts the
-// live session's transcript and renders as its exact duplicate.
+// and it runs in the *session's* project directory, so it adopts that session's
+// transcript and renders as its exact duplicate.
 //
-// The subcommand is what tells them apart. `bg-` as a prefix rather than a list
-// of names, so a helper added later is excluded by default; a session is either
-// bare `claude` or takes flags (`claude -p …`), never one of these.
+// The subcommand is what tells them apart. `bg-` stays a prefix rather than a
+// list so a helper added later is excluded by default; the rest is what
+// `claude --help` prints, plus the job-control subcommands it omits
+// (`agents`/`attach`/`logs`/`stop`, advertised by `claude --bg`) — refresh it
+// from there. A session is bare `claude`, takes flags (`claude -p …`), or takes
+// a prompt. A prompt that is one bare word ("claude doctor") is the only
+// collision, and costs nothing: every session — interactive, `--bg`, headless
+// `-p` — writes ~/.claude/sessions/<pid>.json, so candidate selection admits it
+// through the registry anyway.
 //
 // Both halves matter. The subcommand alone is not Claude's — plenty of CLIs take
 // a `daemon` or an `mcp` subcommand — so a helper is a claude *executable*
-// running one. Callers outside candidate selection depend on that: the
-// orphan-port scan runs this over the whole process table, and without the
-// executable half it would mistake someone else's `mcp` server for one of ours.
-const CLAUDE_COMMANDS = new Set(["daemon", "mcp"]);
+// running one. The orphan-port scan runs this over the whole process table;
+// without the executable half it would hide someone else's `mcp` server.
+const CLAUDE_COMMANDS = new Set([
+  "agents",
+  "attach",
+  "auth",
+  "auto-mode",
+  "daemon",
+  "doctor",
+  "gateway",
+  "install",
+  "logs",
+  "mcp",
+  "plugin",
+  "plugins",
+  "project",
+  "setup-token",
+  "stop",
+  "ultrareview",
+  "update",
+  "upgrade",
+]);
 
 // Running the Claude Code executable is not the same as being Claude Code. The
 // version-named one lives under .../claude/versions/2.1.176, and it is
@@ -63,9 +86,9 @@ export const versionFromPath = (path: string | null) =>
     .pop()
     ?.match(/^\d+\.\d+(\.\d+)?/)?.[0] ?? null;
 
-// First ancestor past shells and wrappers identifies what hosts the
-// session: a macOS app bundle (iTerm, Ghostty, GoLand, Visual Studio
-// Code, Claude...), tmux, or sshd.
+// Wrappers hostApp walks past on its way to the real host: the first ancestor
+// that is not one of these is what owns the session — a macOS app bundle
+// (iTerm, Ghostty, GoLand, Visual Studio Code, Claude...), tmux, or sshd.
 const HOST_SKIP = new Set([
   "op",
   "sudo",
@@ -105,9 +128,10 @@ const WRAPPER_NAMES = new Set([
 
 // Cross-provider AI coding agents running as sub-processes (a session
 // delegating to another agent CLI). A sub-process whose resolved command is
-// one of these is an agent at work, not a background tool — the renderers
-// mark it live (green dot) and paint the row cyan like the Claude sub-agent
-// rows, so delegated agents stand out from the process noise.
+// one of these is an agent at work, not a background tool: the renderers paint
+// its row cyan like the Claude sub-agent rows, and its presence keeps the
+// parent session green — effectiveState (collect.ts) reads a session with one
+// as busy however the registry has it, since it is waiting on that agent.
 const AGENT_CLIS = new Set([
   "copilot",
   "kiro",

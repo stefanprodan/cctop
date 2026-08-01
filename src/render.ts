@@ -373,7 +373,7 @@ export function buildFrame(
   // Identified the way the table identifies it: PROJECT says what it is, PID
   // says which row, and the PID is the only thing here that cannot collide (two
   // sessions on the same project are ordinary). Deliberately *not* sessionName —
-  // it appears in no column, so a name like "cctop-92" would send you hunting.
+  // it has no column of its own, so a name like "cctop-92" would send you hunting.
   //
   // Unlike the row's own bell, this does not decay: it holds the session until
   // it goes busy again, which clears its bellAt and hands the line to the next
@@ -408,10 +408,11 @@ export function buildFrame(
   };
 
   // widths use the plain cell text (color is added afterward); the state
-  // column is the tree gutter, 2 wide — a status dot, or a branch plus a
-  // per-child marker (├◆ agent, ├─ process); tree columns also fit child values
+  // column is the tree gutter, 2 wide — a status dot, or a sub-process branch
+  // (a sub-agent's arm sets its own length, past this column); tree columns
+  // also fit child values
   const widths = cols.map(({ key, header, min = 0 }) => {
-    if (key === "state") return 2; // ● dot, or ├◆ / ├─ branch+marker
+    if (key === "state") return 2; // ● dot, or ├─ / └─ branch
     let w = Math.max(
       header.length,
       min,
@@ -552,9 +553,9 @@ export function buildFrame(
   const moreLine = (arm: string, hidden: number, noun: string) =>
     `${DIM}${arm}  +${hidden} ${noun}${RESET}`;
 
-  // each group is a session row, then its live sub-agents (◆), then its
-  // sub-process tree (─), all hanging off one connected spine: every child
-  // branches with ├ and only the final line of the group closes it with └.
+  // each group is a session row, then its live sub-agents (a long markerless
+  // arm each), then its sub-process tree (├─), all hanging off one connected
+  // spine: every child branches with ├ and only the final line closes it with └.
   // Kept together so truncation never orphans them; each kind is capped so one
   // busy session can't fill the view.
   const groups: Group[] = view.map((r) => {
@@ -886,8 +887,9 @@ export function renderDetail(
       // around them rather than over them
       const tail = portTail(c.ports);
       const room = Math.max(width - stats.length - 2 - visLen(tail), 8);
-      // an agent CLI reads as a live delegated agent, matching the list tree's
-      // cyan; the green dot stays in the list's branch gutter only
+      // an agent CLI reads as a live delegated agent, so its name is cyan like
+      // the list tree's agent rows (which tint the stats too; here they stay
+      // dim, so the fixed-width columns keep reading as chrome)
       out.push(
         c.agent
           ? `${DIM}${stats}${RESET}  ${CYAN}${truncate(cell.name, room)}${RESET}${tail}`
