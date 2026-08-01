@@ -86,9 +86,9 @@ export const versionFromPath = (path: string | null) =>
     .pop()
     ?.match(/^\d+\.\d+(\.\d+)?/)?.[0] ?? null;
 
-// First ancestor past shells and wrappers identifies what hosts the
-// session: a macOS app bundle (iTerm, Ghostty, GoLand, Visual Studio
-// Code, Claude...), tmux, or sshd.
+// Wrappers hostApp walks past on its way to the real host: the first ancestor
+// that is not one of these is what owns the session — a macOS app bundle
+// (iTerm, Ghostty, GoLand, Visual Studio Code, Claude...), tmux, or sshd.
 const HOST_SKIP = new Set([
   "op",
   "sudo",
@@ -128,9 +128,10 @@ const WRAPPER_NAMES = new Set([
 
 // Cross-provider AI coding agents running as sub-processes (a session
 // delegating to another agent CLI). A sub-process whose resolved command is
-// one of these is an agent at work, not a background tool — the renderers
-// mark it live (green dot) and paint the row cyan like the Claude sub-agent
-// rows, so delegated agents stand out from the process noise.
+// one of these is an agent at work, not a background tool: the renderers paint
+// its row cyan like the Claude sub-agent rows, and its presence keeps the
+// parent session green — effectiveState (collect.ts) reads a session with one
+// as busy however the registry has it, since it is waiting on that agent.
 const AGENT_CLIS = new Set([
   "copilot",
   "kiro",
