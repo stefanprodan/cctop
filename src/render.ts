@@ -89,18 +89,26 @@ const FIXED_COLS: Col[] = [
 const OPTIONAL_COLS: Col[] = [
   { key: "version", header: "VER", align: "l" },
   { key: "host", header: "HOST", align: "l" },
+  { key: "name", header: "NAME", align: "l" },
   { key: "project", header: "PROJECT", align: "l" },
   { key: "branch", header: "BRANCH", align: "l" },
   { key: "last-action", header: "LAST", align: "r", min: 3 },
   { key: "prompt", header: "PROMPT", align: "l" },
 ];
 
+// The columns shown when settings.json names none. NAME is left out: it is only
+// meaningful to someone who names sessions with /rename, and an unnamed session
+// would spend a column on a dash. PROMPT already falls back to the name, so
+// nothing becomes invisible by leaving it off — the name is simply not a column
+// of its own until asked for.
+const DEFAULT_COLS = OPTIONAL_COLS.filter((c) => c.key !== "name");
+
 // The effective column table for a frame: the fixed head, then the configured
 // optional columns in the order given (null = all, default order). Unknown
 // names are dropped rather than erroring — the file is hand-edited and may
 // come from a newer cctop that knows more columns; duplicates keep the first.
 function resolveCols(columns?: string[] | null): Col[] {
-  if (columns == null) return [...FIXED_COLS, ...OPTIONAL_COLS];
+  if (columns == null) return [...FIXED_COLS, ...DEFAULT_COLS];
   const seen = new Set<string>();
   const tail: Col[] = [];
   for (const key of columns) {
@@ -308,6 +316,7 @@ export function buildFrame(
       model: safe(shortModel(r.model)),
       version: safe(r.version),
       host: truncate(safe(r.host), MAX_HOST_W),
+      name: safe(r.sessionName),
       project: safe(shortProject(r.project)),
       branch: safe(r.branch),
       "last-action": r.lastMs ? formatDuration((nowMs - r.lastMs) / 1000) : "-",

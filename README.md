@@ -215,10 +215,17 @@ The configurable columns, in their default order:
 |---------------|----------|------------------------------------------|
 | `version`     | `VER`    | the Claude Code version                  |
 | `host`        | `HOST`   | the host app (terminal or IDE)           |
+| `name`        | `NAME`   | the session name (hidden unless listed)  |
 | `project`     | `PROJECT`| the project directory name               |
 | `branch`      | `BRANCH` | the git branch                           |
 | `last-action` | `LAST`   | time since the session's last activity   |
 | `prompt`      | `PROMPT` | the last prompt (or the session name)    |
+
+`name` is the one column not shown by default: it only says something once you
+name sessions with `/rename`, and `PROMPT` already falls back to the name for a
+session that has yet to be prompted. List it to give the name a column of its
+own — worth it when several sessions share a project and branch, where `PROMPT`
+is otherwise the only thing telling two rows apart.
 
 The example above hides `VER` and `HOST` — handy when every session shows the
 same Claude version and terminal, freeing their width for `PROMPT`. Removing
