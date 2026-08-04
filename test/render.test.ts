@@ -861,6 +861,26 @@ describe("configurable columns", () => {
     expect(h.indexOf("PROJECT")).toBeLessThan(h.indexOf("PROMPT"));
   });
 
+  test("name is absent by default and appears once listed", () => {
+    expect(header(null)).not.toContain("NAME");
+    expect(rowText(null)).not.toContain("session name");
+    const h = header(["name", "project", "prompt"]);
+    expect(h).toContain("NAME");
+    expect(h.indexOf("NAME")).toBeLessThan(h.indexOf("PROJECT"));
+    expect(rowText(["name", "project", "prompt"])).toContain("session name");
+  });
+
+  test("an unnamed session leaves the name column blank, not missing", () => {
+    const line = stripAnsi(
+      buildFrame([baseRow({ sessionName: null })], 200, null, null, [
+        "name",
+        "prompt",
+      ]).groups[0].lines[0],
+    );
+    expect(line).toContain("-");
+    expect(line).toContain("implement tests");
+  });
+
   test("drops unknown names and duplicates", () => {
     const h = header(["bogus", "prompt", "prompt"]);
     expect(h).not.toContain("bogus");

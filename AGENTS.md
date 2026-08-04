@@ -128,9 +128,11 @@ and its preferences `~/.claude/cctop/settings.json` (refresh interval + sort
 mode + notifications toggle; written when an explicit `--watch` differs from
 the persisted value and when `s` cycles the sort or `n` toggles notifications).
 The same file carries the optional `columns` key — the visible column set, an
-ordered list of the configurable column names (`version`, `host`, `project`,
-`branch`, `last-action`, `prompt`; the first seven columns are the tree
-layout's skeleton and never configurable). It is hand-edited only: no TUI
+ordered list of the configurable column names (`version`, `host`, `name`,
+`project`, `branch`, `last-action`, `prompt`; the first seven columns are the
+tree layout's skeleton and never configurable). `name` is the one column absent
+from the default set, so listing any columns at all is what opts into it. It is
+hand-edited only: no TUI
 action writes it, `saveSettings`'s merge preserves it, and `buildFrame`
 silently drops unknown names (the file may come from a newer cctop). It
 applies to the TUI and the single-frame path alike; `--json` is unaffected.
