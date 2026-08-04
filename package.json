@@ -1,6 +1,6 @@
 {
   "name": "cctop",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Live top-style monitor for Claude Code sessions",
   "type": "module",
   "bin": {
