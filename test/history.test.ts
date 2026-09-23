@@ -56,6 +56,46 @@ describe("history aggregation", () => {
     expect(c.byProject.get("/Users/a/proj")).toEqual({ tokens: 115, turns: 2 });
   });
 
+  // Each content block of a message is its own entry repeating the message's
+  // usage; the message must count as one turn, input once, output at its max.
+  test("counts a message split across block entries once", () => {
+    const block = (type: string, output: number) =>
+      JSON.stringify({
+        type: "assistant",
+        timestamp: "2026-06-20T01:00:00",
+        cwd: "/Users/a/proj",
+        message: {
+          id: "msg_1",
+          model: "claude-sonnet-4-6",
+          usage: {
+            input_tokens: 10,
+            cache_read_input_tokens: 1000,
+            output_tokens: output,
+          },
+          content: [{ type, name: "Bash" }],
+        },
+      });
+    const c = H.aggregateLines([
+      block("thinking", 8),
+      block("text", 8),
+      block("tool_use", 300),
+    ]);
+    const d = c.days.get("2026-06-20")!;
+    expect(d.inputFresh).toBe(10);
+    expect(d.cacheRead).toBe(1000);
+    expect(d.output).toBe(300);
+    expect(d.turns).toBe(1);
+    expect(c.byModel.get("claude-sonnet-4-6")).toEqual({
+      tokens: 1310,
+      turns: 1,
+    });
+    expect(c.byProject.get("/Users/a/proj")).toEqual({
+      tokens: 1310,
+      turns: 1,
+    });
+    expect(c.byTool.get("Bash")).toBe(1); // blocks still count their tools
+  });
+
   test("counts tool_use blocks and server web tools", () => {
     const c = H.aggregateLines([
       JSON.stringify({
@@ -197,6 +237,34 @@ describe("history merge", () => {
     expect(proj.tokens).toBe(30);
     expect(h.byProject.has("/repo/web")).toBe(false); // not a separate row
   });
+
+  test("keeps a child with its own sessions out of a parent project", () => {
+    const turn = (cwd: string) =>
+      H.aggregateLines([
+        JSON.stringify({
+          type: "assistant",
+          timestamp: "2026-06-20T01:00:00",
+          cwd,
+          message: {
+            model: "claude-opus-4-8",
+            usage: { input_tokens: 10 },
+            content: [],
+          },
+        }),
+      ]);
+    // one session in an org dir must not swallow the repos beneath it
+    const h = H.merge([turn("/org"), turn("/org/repo"), turn("/org/repo")], 0);
+    expect(h.byProject.get("/org")).toEqual({
+      tokens: 10,
+      turns: 1,
+      sessions: 1,
+    });
+    expect(h.byProject.get("/org/repo")).toEqual({
+      tokens: 20,
+      turns: 2,
+      sessions: 2,
+    });
+  });
 });
 
 describe("buildSessions", () => {
@@ -317,6 +385,20 @@ describe("formatting", () => {
     expect(R.shortTool("mcp__github__a__b")).toBe("github:a__b");
     // malformed (no <server>__<tool> split) is left as the remainder
     expect(R.shortTool("mcp__weird")).toBe("weird");
+  });
+
+  test("rankTools merges MCP ids that shorten to the same label", () => {
+    const byTool = new Map([
+      ["Bash", 5],
+      ["mcp__chrome-devtools__click", 3],
+      ["mcp__plugin_chrome-devtools-mcp_chrome-devtools__click", 2],
+      ["mcp__bun-docs__search_bun", 4],
+    ]);
+    expect(R.rankTools(byTool, true)).toEqual([
+      ["chrome-devtools:click", 5],
+      ["bun-docs:search_bun", 4],
+    ]);
+    expect(R.rankTools(byTool, false)).toEqual([["Bash", 5]]);
   });
 });
 

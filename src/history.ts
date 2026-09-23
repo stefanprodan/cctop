@@ -309,15 +309,25 @@ function modelStats(h: History, width: number): string[] {
 // top-N — they answer different questions (how you work vs which integrations
 // you lean on). MCP names are rewritten to "server:tool" with a wider cap.
 function toolStats(h: History, mcp: boolean, width: number): string[] {
-  const rows = [...h.byTool.entries()]
-    .filter(([n]) => n.startsWith("mcp__") === mcp)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, TOP_TOOLS)
-    .map(([name, n]) => ({
-      label: mcp ? shortTool(name) : name,
-      value: String(n),
-    }));
+  const rows = rankTools(h.byTool, mcp).map(([label, n]) => ({
+    label,
+    value: String(n),
+  }));
   return statRows(rows, width, mcp ? { nameCap: MCP_NAME_MAX } : {});
+}
+
+// The top tools of one kind, counts summed per displayed label: one MCP server
+// installed two ways (standalone mcp__chrome-devtools__… and as a plugin,
+// mcp__plugin_chrome-devtools-mcp_chrome-devtools__…) shortens to the same
+// "server:tool", and is one tool to the reader, not two rows.
+function rankTools(byTool: Map<string, number>, mcp: boolean) {
+  const byLabel = new Map<string, number>();
+  for (const [name, n] of byTool) {
+    if (name.startsWith("mcp__") !== mcp) continue;
+    const label = mcp ? shortTool(name) : name;
+    byLabel.set(label, (byLabel.get(label) ?? 0) + n);
+  }
+  return [...byLabel.entries()].sort((a, b) => b[1] - a[1]).slice(0, TOP_TOOLS);
 }
 
 // A top-style table: a dim header row, then one row per record. Every column
@@ -525,4 +535,4 @@ export function renderHistory(
 }
 
 // Exported for tests only.
-export const __test = { big, barEighths, shortTool };
+export const __test = { big, barEighths, shortTool, rankTools };
