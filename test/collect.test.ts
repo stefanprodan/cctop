@@ -629,6 +629,31 @@ describe("transcript file scanning", () => {
     expect(ctx.running).toBe(false);
   });
 
+  // Claude Code writes each content block as its own entry; only the final
+  // one carries a stop_reason, the rest an explicit null. Narration streamed
+  // ahead of a long tool call must keep the agent live; end_turn ends it.
+  test("treats a mid-message text block as running", async () => {
+    const block = (text: string, stop_reason: string | null) => ({
+      type: "assistant",
+      message: {
+        model: "claude-opus-5",
+        usage: { input_tokens: 8 },
+        content: [{ type: "text", text }],
+        stop_reason,
+      },
+    });
+    const streaming = write(
+      "agent-3.jsonl",
+      jsonl([block("Now the recorder script.", null)]),
+    );
+    expect((await __test.agentContext(streaming)).running).toBe(true);
+    const finished = write(
+      "agent-4.jsonl",
+      jsonl([block("all done", "end_turn")]),
+    );
+    expect((await __test.agentContext(finished)).running).toBe(false);
+  });
+
   // collectRows runs from a floating promise, so a throw out of here would
   // take the whole TUI down over one malformed line in one agent transcript
   test("survives a malformed entry instead of throwing", async () => {
