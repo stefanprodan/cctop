@@ -92,7 +92,7 @@ describe("render helpers", () => {
       [...frame.summary, frame.header, ...frame.groups[0].lines].join("\n"),
     );
     expect(text).toContain("1 busy");
-    expect(text).toContain("1 subagents");
+    expect(text).toMatch(/\b1 subagent\b(?!s)/);
     expect(text).toContain("PID");
     expect(text).toContain("cctop");
     expect(text).toContain("implement tests");
@@ -154,6 +154,10 @@ describe("render helpers", () => {
     expect(detail).toContain("Sub-agents (12)");
     expect(detail).toContain("Sub-processes (11)");
     expect(detail).toContain("Bash: job 12");
+    // the agent's turn text is cyan, like its row in the list tree
+    expect(renderDetail(row, 120).join("\n")).toContain(
+      `${CYAN}Bash: job 12${RESET}`,
+    );
     expect(detail).toContain("bash › sleep 11");
     expect(detail).toContain("Last Turn");
     // the tool name is tagged and the colon dropped: "Edit: render.ts" → "Edit render.ts"
