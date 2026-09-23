@@ -96,13 +96,18 @@ const dateKey = (d: Date) => {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 };
 
-const addTally = (m: Map<string, Tally>, key: string, tokens: number) => {
+const addTally = (
+  m: Map<string, Tally>,
+  key: string,
+  tokens: number,
+  turns = 1,
+) => {
   const t = m.get(key);
   if (t) {
     t.tokens += tokens;
-    t.turns += 1;
+    t.turns += turns;
   } else {
-    m.set(key, { tokens, turns: 1 });
+    m.set(key, { tokens, turns });
   }
 };
 
@@ -121,6 +126,12 @@ function aggregateLines(lines: Iterable<string>, session = true): Contrib {
     lastTs: null,
     project: null,
   };
+  // Claude Code writes each content block of a message (thinking, text,
+  // tool_use) as its own entry, and every one repeats the message's usage:
+  // the input side verbatim, output_tokens growing to its final count. Keyed
+  // by message id, this holds the output already counted, so a message is one
+  // turn whose input counts once and whose output counts to its largest value.
+  const outputSeen = new Map<string, number>();
   for (const line of lines) {
     if (!line) continue;
     let e: any;
@@ -142,10 +153,15 @@ function aggregateLines(lines: Iterable<string>, session = true): Contrib {
     if (!u || !msg.model || msg.model === "<synthetic>") continue;
     if (Number.isNaN(ts)) continue; // can't bucket a turn with no timestamp
 
-    const inputFresh = u.input_tokens ?? 0;
-    const cacheRead = u.cache_read_input_tokens ?? 0;
-    const cacheCreate = u.cache_creation_input_tokens ?? 0;
-    const output = u.output_tokens ?? 0;
+    const id = typeof msg.id === "string" ? msg.id : null;
+    const prevOutput = id === null ? undefined : outputSeen.get(id);
+    const repeat = prevOutput !== undefined;
+    const turn = repeat ? 0 : 1;
+    const inputFresh = repeat ? 0 : (u.input_tokens ?? 0);
+    const cacheRead = repeat ? 0 : (u.cache_read_input_tokens ?? 0);
+    const cacheCreate = repeat ? 0 : (u.cache_creation_input_tokens ?? 0);
+    const output = Math.max(0, (u.output_tokens ?? 0) - (prevOutput ?? 0));
+    if (id !== null) outputSeen.set(id, (prevOutput ?? 0) + output);
     const total = inputFresh + cacheRead + cacheCreate + output;
 
     const d = new Date(ts);
@@ -156,21 +172,21 @@ function aggregateLines(lines: Iterable<string>, session = true): Contrib {
       day.cacheRead += cacheRead;
       day.cacheCreate += cacheCreate;
       day.output += output;
-      day.turns += 1;
+      day.turns += turn;
     } else {
       c.days.set(key, {
         inputFresh,
         cacheRead,
         cacheCreate,
         output,
-        turns: 1,
+        turns: turn,
       });
     }
 
-    addTally(c.byModel, msg.model, total);
+    addTally(c.byModel, msg.model, total, turn);
     // key by full cwd; the renderer shortens to the last path segments
     const proj = e.cwd ?? "?";
-    addTally(c.byProject, proj, total);
+    addTally(c.byProject, proj, total, turn);
     // a session belongs to the project of its first counted turn
     if (session && c.project === null) c.project = proj;
 
@@ -364,6 +380,9 @@ function merge(
   // turns land under a child path with no session of its own. Fold each such
   // child path into its nearest ancestor project that has activity, so one repo
   // shows as one row instead of splitting into a parent plus 0-session subdirs.
+  // A child with sessions of its own is a project in its own right and stays:
+  // one session launched in a parent directory (an org dir holding every repo)
+  // must not swallow all the repos beneath it.
   const nearestAncestor = (k: string): string | null => {
     let p = k;
     for (let i = p.lastIndexOf("/"); i > 0; i = p.lastIndexOf("/")) {
@@ -377,18 +396,14 @@ function merge(
   for (const k of [...byProjectTally.keys()].sort(
     (a, b) => b.length - a.length,
   )) {
+    if (sessionsByProject.get(k)) continue;
     const par = nearestAncestor(k);
     if (!par) continue;
     const src = byProjectTally.get(k)!;
     const dst = byProjectTally.get(par)!;
     dst.tokens += src.tokens;
     dst.turns += src.turns;
-    sessionsByProject.set(
-      par,
-      (sessionsByProject.get(par) ?? 0) + (sessionsByProject.get(k) ?? 0),
-    );
     byProjectTally.delete(k);
-    sessionsByProject.delete(k);
   }
 
   // fold the session counts into the per-project tallies
