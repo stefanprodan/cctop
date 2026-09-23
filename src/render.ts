@@ -359,14 +359,16 @@ export function buildFrame(
   if (idle) states.push(`${RED}●${RESET} ${idle} idle`);
   const summary = [
     `${DIM}Sessions:${RESET} ${states.join("  ") || view.length}` +
-      (totalAgents ? `   ${CYAN}◆${RESET} ${totalAgents} subagents` : ""),
+      (totalAgents
+        ? `   ${CYAN}◆${RESET} ${totalAgents} subagent${totalAgents === 1 ? "" : "s"}`
+        : ""),
     // value-first ("1.8% cpu") to match the Sessions line's "1 busy" style;
     // the ↓/↑ net rate is host-wide (every interface), unlike the Claude-only
     // cpu/mem/procs to its left, so it carries its own arrows rather than a
     // "net" label that would imply it's scoped to the sessions
     `${DIM}Resources:${RESET} ${totalCpu.toFixed(1)}% cpu  ${formatMem(
       totalMem,
-    )} mem  ${totalProcs} procs${
+    )} mem  ${totalProcs} proc${totalProcs === 1 ? "" : "s"}${
       net
         ? `  ${DIM}↓${RESET} ${formatRate(net.rx)} ${DIM}↑${RESET} ${formatRate(
             net.tx,
@@ -874,7 +876,7 @@ export function renderDetail(
       const name = named ? `${named} · ` : "";
       const line = `${CYAN}◆${RESET} ${name}${model} · ${ac} ctx · up ${formatDuration(
         a.uptimeSec,
-      )}${a.activity ? ` · ${safe(a.activity)}` : ""}`;
+      )}${a.activity ? ` · ${CYAN}${safe(a.activity)}${RESET}` : ""}`;
       out.push(truncateStyled(line, width));
     }
   }
