@@ -35,7 +35,7 @@ import {
   visLen,
   YELLOW,
 } from "./format.ts";
-import { type HistoryTab, renderHistory } from "./history.ts";
+import { HISTORY_TABS, type HistoryTab, renderHistory } from "./history.ts";
 import { finishedSessions, notifySeq } from "./notify.ts";
 import {
   buildFrame,
@@ -72,7 +72,7 @@ interface State {
   history: History | null; // aggregated history, scanned on first open then cached
   historyLoading: boolean; // a full-scan is in flight (first open or rescan)
   historyScroll: number; // first visible line (history)
-  historyTab: HistoryTab; // active history tab (sessions | stats)
+  historyTab: HistoryTab; // active history tab (stats | projects | sessions)
   message: string | null;
   messageColor: string;
   messageUntil: number;
@@ -143,7 +143,7 @@ export async function runApp(opts: AppOptions): Promise<void> {
     history: null,
     historyLoading: false,
     historyScroll: 0,
-    historyTab: "sessions",
+    historyTab: HISTORY_TABS[0],
     message: null,
     messageColor: DIM,
     messageUntil: 0,
@@ -513,12 +513,15 @@ export async function runApp(opts: AppOptions): Promise<void> {
     switch (k) {
       case "tab":
       case "left":
-      case "right":
-        // toggle Sessions <-> Stats; reset scroll so the new tab starts at top
-        state.historyTab =
-          state.historyTab === "sessions" ? "stats" : "sessions";
+      case "right": {
+        // cycle Stats -> Projects -> Sessions (← steps back); reset scroll so
+        // the new tab starts at top
+        const n = HISTORY_TABS.length;
+        const i = HISTORY_TABS.indexOf(state.historyTab);
+        state.historyTab = HISTORY_TABS[(i + (k === "left" ? n - 1 : 1)) % n];
         state.historyScroll = 0;
         break;
+      }
       case "up":
       case "k":
         state.historyScroll = Math.max(0, state.historyScroll - 1);

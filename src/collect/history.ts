@@ -65,6 +65,9 @@ export interface History {
   byModel: Map<string, Tally>;
   byTool: Map<string, number>; // tool_use name -> count; + web_search/web_fetch
   byProject: Map<string, ProjectStat>; // key = full cwd (renderer shortens it)
+  // per-project tokens by day (same keys as byProject), so the renderer can
+  // rank projects over any calendar window (this week, this month)
+  projectDays: Map<string, Map<string, number>>;
   sessions: SessionRow[]; // top-level sessions, newest first
   totals: {
     tokens: number;
@@ -84,6 +87,7 @@ interface Contrib {
   byModel: Map<string, Tally>;
   byTool: Map<string, number>;
   byProject: Map<string, Tally>;
+  projectDays: Map<string, Map<string, number>>; // cwd -> day -> tokens
   firstTs: number | null; // earliest entry timestamp (ms), for sessionsStarted
   lastTs: number | null; // latest entry timestamp (ms), for session duration
   project: string | null; // this session's project (cwd); null for sub-agent files
@@ -91,7 +95,7 @@ interface Contrib {
 
 // Local-time YYYY-MM-DD. Local (not UTC) so the day/heatmap buckets line up with
 // the user's own clock — "yesterday" means their yesterday.
-const dateKey = (d: Date) => {
+export const dateKey = (d: Date) => {
   const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 };
@@ -111,6 +115,21 @@ const addTally = (
   }
 };
 
+// Add `tokens` to one project's day in a cwd -> day -> tokens map.
+const addDay = (
+  m: Map<string, Map<string, number>>,
+  proj: string,
+  day: string,
+  tokens: number,
+) => {
+  let days = m.get(proj);
+  if (!days) {
+    days = new Map();
+    m.set(proj, days);
+  }
+  days.set(day, (days.get(day) ?? 0) + tokens);
+};
+
 // Roll one transcript's lines into a Contrib. Every assistant turn with a usage
 // block contributes tokens. For a session file we skip isSidechain turns (those
 // are counted from the sub-agent files instead, avoiding double counting) and
@@ -122,6 +141,7 @@ function aggregateLines(lines: Iterable<string>, session = true): Contrib {
     byModel: new Map(),
     byTool: new Map(),
     byProject: new Map(),
+    projectDays: new Map(),
     firstTs: null,
     lastTs: null,
     project: null,
@@ -187,6 +207,7 @@ function aggregateLines(lines: Iterable<string>, session = true): Contrib {
     // key by full cwd; the renderer shortens to the last path segments
     const proj = e.cwd ?? "?";
     addTally(c.byProject, proj, total, turn);
+    addDay(c.projectDays, proj, key, total);
     // a session belongs to the project of its first counted turn
     if (session && c.project === null) c.project = proj;
 
@@ -335,6 +356,7 @@ function merge(
   const byModel = new Map<string, Tally>();
   const byTool = new Map<string, number>();
   const byProjectTally = new Map<string, Tally>();
+  const projectDays = new Map<string, Map<string, number>>();
   const sessionsByDay = new Map<string, number>();
   const sessionsByProject = new Map<string, number>();
 
@@ -363,6 +385,8 @@ function merge(
     }
     mergeTally(byModel, c.byModel);
     mergeTally(byProjectTally, c.byProject);
+    for (const [proj, pd] of c.projectDays)
+      for (const [day, n] of pd) addDay(projectDays, proj, day, n);
     for (const [k, n] of c.byTool) byTool.set(k, (byTool.get(k) ?? 0) + n);
     if (c.firstTs !== null) {
       const key = dateKey(new Date(c.firstTs));
@@ -404,6 +428,9 @@ function merge(
     dst.tokens += src.tokens;
     dst.turns += src.turns;
     byProjectTally.delete(k);
+    for (const [day, n] of projectDays.get(k) ?? [])
+      addDay(projectDays, par, day, n);
+    projectDays.delete(k);
   }
 
   // fold the session counts into the per-project tallies
@@ -447,6 +474,7 @@ function merge(
     byModel,
     byTool,
     byProject,
+    projectDays,
     sessions,
     totals: {
       tokens: totalTokens,
