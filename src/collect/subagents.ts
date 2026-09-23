@@ -59,10 +59,14 @@ export async function agentContext(path: string) {
   // the two entries the fields below are derived from, picked as the tail
   // streams past so no pass holds every parsed entry alive at once
   let lastUsage: any; // newest assistant message carrying usage
-  let last: any; // newest entry of any kind
+  // newest conversation entry (user/assistant). Attachments are skipped: the
+  // harness appends them after a tool result (a total_tokens_reminder, say),
+  // so the newest entry of any kind would hide the tool_result that marks the
+  // agent as mid-flight.
+  let last: any;
   const { ok } = await readTailEntries(path, (e) => {
     if (e?.type === "assistant" && e.message?.usage) lastUsage = e.message;
-    last = e;
+    if (e?.type === "user" || e?.type === "assistant") last = e;
   });
   out.ok = ok;
   // a malformed entry must not escape: this runs inside collectRows, whose

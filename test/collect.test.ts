@@ -654,6 +654,24 @@ describe("transcript file scanning", () => {
     expect((await __test.agentContext(finished)).running).toBe(false);
   });
 
+  test("looks past trailing attachments to the last conversation entry", async () => {
+    const path = write(
+      "agent-6.jsonl",
+      jsonl([
+        assistant("claude-opus-5", { input_tokens: 8 }, [
+          { type: "tool_use", name: "Write", input: { file_path: "a.ts" } },
+        ]),
+        user([{ type: "tool_result", content: "ok" }]),
+        {
+          type: "attachment",
+          attachment: { type: "total_tokens_reminder", text: "..." },
+        },
+      ]),
+    );
+    const ctx = await __test.agentContext(path);
+    expect(ctx.running).toBe(true); // the tool_result, not the attachment
+  });
+
   // collectRows runs from a floating promise, so a throw out of here would
   // take the whole TUI down over one malformed line in one agent transcript
   test("survives a malformed entry instead of throwing", async () => {
