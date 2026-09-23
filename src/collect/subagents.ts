@@ -69,14 +69,21 @@ export async function agentContext(path: string) {
   // caller drives it as a floating promise, so a throw here would take the
   // whole TUI down over one bad line. Whatever was read stays usable.
   try {
-    // mid-flight: a tool call was issued (awaiting its result) or a result
-    // just arrived (awaiting the next turn). A final text-only assistant turn
-    // means the agent finished, so the mtime window alone governs it. Derived
-    // before the message contents below, which walk arbitrary blocks: a
-    // malformed one there must not cost a live agent its row.
+    // mid-flight: a tool call was issued (awaiting its result), a result just
+    // arrived (awaiting the next turn), or the message is still streaming.
+    // Claude Code writes each content block as its own entry and only the
+    // last carries a stop_reason; the earlier ones record an explicit null.
+    // So a text block with stop_reason null is mid-message — typically
+    // narration while the model generates a long tool call (a big Write),
+    // which can take minutes. A final text-only turn (end_turn) means the
+    // agent finished, so the mtime window alone governs it. Derived before
+    // the message contents below, which walk arbitrary blocks: a malformed
+    // one there must not cost a live agent its row.
     out.running =
       !!last &&
-      ((last.type === "assistant" && hasBlock(last.message, "tool_use")) ||
+      ((last.type === "assistant" &&
+        (hasBlock(last.message, "tool_use") ||
+          last.message?.stop_reason === null)) ||
         (last.type === "user" && hasBlock(last.message, "tool_result")));
     if (lastUsage) {
       out.model = lastUsage.model;
