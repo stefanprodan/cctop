@@ -64,7 +64,11 @@ export interface History {
   days: DayBucket[]; // ascending, contiguous (gaps zero-filled)
   byModel: Map<string, Tally>;
   byTool: Map<string, number>; // tool_use name -> count; + web_search/web_fetch
+  byBash: Map<string, number>; // program -> Bash calls that ran it
   byProject: Map<string, ProjectStat>; // key = full cwd (renderer shortens it)
+  // per-project tokens by day (same keys as byProject), so the renderer can
+  // rank projects over any calendar window (this week, this month)
+  projectDays: Map<string, Map<string, number>>;
   sessions: SessionRow[]; // top-level sessions, newest first
   totals: {
     tokens: number;
@@ -83,7 +87,9 @@ interface Contrib {
   days: Map<string, Omit<DayBucket, "date" | "sessionsStarted">>;
   byModel: Map<string, Tally>;
   byTool: Map<string, number>;
+  byBash: Map<string, number>;
   byProject: Map<string, Tally>;
+  projectDays: Map<string, Map<string, number>>; // cwd -> day -> tokens
   firstTs: number | null; // earliest entry timestamp (ms), for sessionsStarted
   lastTs: number | null; // latest entry timestamp (ms), for session duration
   project: string | null; // this session's project (cwd); null for sub-agent files
@@ -91,7 +97,7 @@ interface Contrib {
 
 // Local-time YYYY-MM-DD. Local (not UTC) so the day/heatmap buckets line up with
 // the user's own clock — "yesterday" means their yesterday.
-const dateKey = (d: Date) => {
+export const dateKey = (d: Date) => {
   const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 };
@@ -111,6 +117,81 @@ const addTally = (
   }
 };
 
+// Words that lead a command segment without being the program it runs (shell
+// keywords and wrappers): skipped, and the next word is the program.
+const BASH_SKIP = new Set([
+  "do",
+  "done",
+  "else",
+  "env",
+  "fi",
+  "if",
+  "sudo",
+  "then",
+  "time",
+  "until",
+  "while",
+]);
+
+// Programs whose whole segment is dropped: cd (which nearly every command
+// opens with) and echo (mostly "---" separators between commands) would top
+// the list while saying nothing, and their argument is no program either; nor
+// is anything in a for header (for i in ...), unlike while/if conditions.
+const BASH_DROP = new Set(["cd", "echo", "for"]);
+
+// The programs a Bash tool call runs: the first word of each command split on
+// the shell's list operators, env assignments and wrappers skipped, path
+// stripped (/usr/bin/git -> git), each program once per call. A pipeline
+// counts only its first stage, or the | head / | grep filters would swamp
+// what actually ran. A lexical guess, not a shell parse, so first it blanks
+// what isn't command position: heredoc bodies (script text), quoted strings
+// (their | ; & would split), and fd redirections (the 1 of 2>&1). Only
+// word-like tokens with a letter count.
+const HEREDOC_RE =
+  /<<-?\s*(['"]?)(\w+)\1[^\n]*\n[\s\S]*?\n\s*\2[ \t]*(?=\n|$)/g;
+const QUOTED_RE = /'[^']*'|"(?:[^"\\]|\\.)*"/g;
+const REDIRECT_RE = /\d*>&\d*|&>|\d+>/g;
+
+export function bashPrograms(command: unknown): string[] {
+  if (typeof command !== "string") return [];
+  const bare = command
+    .replace(HEREDOC_RE, "\n")
+    .replace(QUOTED_RE, "''")
+    .replace(REDIRECT_RE, " ");
+  const out = new Set<string>();
+  for (const seg of bare.split(/&&|\|\||[;&\n()]/)) {
+    const lead = seg.split("|")[0]; // a pipeline counts its source, not filters
+    for (const word of lead.trim().split(/\s+/)) {
+      if (!word || /^[A-Za-z_][A-Za-z0-9_]*=/.test(word)) continue; // FOO=bar
+      if (BASH_SKIP.has(word)) continue;
+      const prog = word.slice(word.lastIndexOf("/") + 1);
+      if (
+        !BASH_DROP.has(prog) &&
+        /^[A-Za-z0-9][A-Za-z0-9_.+-]*$/.test(prog) &&
+        /[A-Za-z]/.test(prog)
+      )
+        out.add(prog);
+      break; // only the segment's leading program
+    }
+  }
+  return [...out];
+}
+
+// Add `tokens` to one project's day in a cwd -> day -> tokens map.
+const addDay = (
+  m: Map<string, Map<string, number>>,
+  proj: string,
+  day: string,
+  tokens: number,
+) => {
+  let days = m.get(proj);
+  if (!days) {
+    days = new Map();
+    m.set(proj, days);
+  }
+  days.set(day, (days.get(day) ?? 0) + tokens);
+};
+
 // Roll one transcript's lines into a Contrib. Every assistant turn with a usage
 // block contributes tokens. For a session file we skip isSidechain turns (those
 // are counted from the sub-agent files instead, avoiding double counting) and
@@ -121,7 +202,9 @@ function aggregateLines(lines: Iterable<string>, session = true): Contrib {
     days: new Map(),
     byModel: new Map(),
     byTool: new Map(),
+    byBash: new Map(),
     byProject: new Map(),
+    projectDays: new Map(),
     firstTs: null,
     lastTs: null,
     project: null,
@@ -187,14 +270,19 @@ function aggregateLines(lines: Iterable<string>, session = true): Contrib {
     // key by full cwd; the renderer shortens to the last path segments
     const proj = e.cwd ?? "?";
     addTally(c.byProject, proj, total, turn);
+    addDay(c.projectDays, proj, key, total);
     // a session belongs to the project of its first counted turn
     if (session && c.project === null) c.project = proj;
 
     const blocks = msg.content;
     if (Array.isArray(blocks))
-      for (const b of blocks)
-        if (b?.type === "tool_use" && b.name)
-          c.byTool.set(b.name, (c.byTool.get(b.name) ?? 0) + 1);
+      for (const b of blocks) {
+        if (b?.type !== "tool_use" || !b.name) continue;
+        c.byTool.set(b.name, (c.byTool.get(b.name) ?? 0) + 1);
+        if (b.name === "Bash")
+          for (const prog of bashPrograms(b.input?.command))
+            c.byBash.set(prog, (c.byBash.get(prog) ?? 0) + 1);
+      }
     const st = u.server_tool_use;
     if (st?.web_search_requests)
       c.byTool.set(
@@ -334,7 +422,9 @@ function merge(
   const days = new Map<string, DayBucket>();
   const byModel = new Map<string, Tally>();
   const byTool = new Map<string, number>();
+  const byBash = new Map<string, number>();
   const byProjectTally = new Map<string, Tally>();
+  const projectDays = new Map<string, Map<string, number>>();
   const sessionsByDay = new Map<string, number>();
   const sessionsByProject = new Map<string, number>();
 
@@ -363,7 +453,10 @@ function merge(
     }
     mergeTally(byModel, c.byModel);
     mergeTally(byProjectTally, c.byProject);
+    for (const [proj, pd] of c.projectDays)
+      for (const [day, n] of pd) addDay(projectDays, proj, day, n);
     for (const [k, n] of c.byTool) byTool.set(k, (byTool.get(k) ?? 0) + n);
+    for (const [k, n] of c.byBash) byBash.set(k, (byBash.get(k) ?? 0) + n);
     if (c.firstTs !== null) {
       const key = dateKey(new Date(c.firstTs));
       sessionsByDay.set(key, (sessionsByDay.get(key) ?? 0) + 1);
@@ -404,6 +497,9 @@ function merge(
     dst.tokens += src.tokens;
     dst.turns += src.turns;
     byProjectTally.delete(k);
+    for (const [day, n] of projectDays.get(k) ?? [])
+      addDay(projectDays, par, day, n);
+    projectDays.delete(k);
   }
 
   // fold the session counts into the per-project tallies
@@ -446,7 +542,9 @@ function merge(
     days: filled,
     byModel,
     byTool,
+    byBash,
     byProject,
+    projectDays,
     sessions,
     totals: {
       tokens: totalTokens,
@@ -532,4 +630,10 @@ export async function collectHistory(): Promise<History> {
 }
 
 // Exported for tests only.
-export const __test = { aggregateLines, merge, dateKey, buildSessions };
+export const __test = {
+  aggregateLines,
+  merge,
+  dateKey,
+  buildSessions,
+  bashPrograms,
+};
