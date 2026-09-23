@@ -155,6 +155,53 @@ describe("history aggregation", () => {
   });
 });
 
+describe("bashPrograms", () => {
+  const progs = (cmd: unknown) => H.bashPrograms(cmd).sort();
+
+  test("takes each command's leading program, pipelines by their source", () => {
+    expect(progs("cd /repo && git status | head -5; make test")).toEqual([
+      "git",
+      "make",
+    ]);
+    expect(progs("/usr/bin/git log || true")).toEqual(["git", "true"]);
+  });
+
+  test("skips env assignments, wrappers, keywords, cd and echo", () => {
+    expect(progs("FOO=1 sudo bun test")).toEqual(["bun"]);
+    expect(progs('for i in 1 2; do echo "$i"; sleep 1; done')).toEqual([
+      "sleep",
+    ]);
+  });
+
+  test("ignores heredoc bodies, quoted text, and fd redirections", () => {
+    const cmd = [
+      "cat > f.py <<'EOF'",
+      "import os",
+      "print('a | b')",
+      "EOF",
+      'uv run f.py 2>&1 | grep "x; y"',
+    ].join("\n");
+    expect(progs(cmd)).toEqual(["cat", "uv"]);
+  });
+
+  test("counts a program once per call and tolerates junk input", () => {
+    expect(progs("git a && git b")).toEqual(["git"]);
+    expect(progs(undefined)).toEqual([]);
+    expect(progs(42)).toEqual([]);
+  });
+
+  test("aggregates Bash programs across turns", () => {
+    const c = H.aggregateLines([
+      aTurn("2026-06-20T01:00:00", { input_tokens: 1 }, {}).replace(
+        '"content":[]',
+        '"content":[{"type":"tool_use","name":"Bash","input":{"command":"git status && make"}}]',
+      ),
+    ]);
+    expect(c.byBash.get("git")).toBe(1);
+    expect(c.byBash.get("make")).toBe(1);
+  });
+});
+
 describe("history merge", () => {
   test("gap-fills days, folds in session starts, and totals", () => {
     const c1 = H.aggregateLines([
@@ -387,6 +434,15 @@ describe("formatting", () => {
     expect(R.shortTool("mcp__weird")).toBe("weird");
   });
 
+  test("levelWidths evens columns out narrowest first, within the frame", () => {
+    // 28+37+21 + 2 gaps = 94: 26 spare evens all three at 37 in a 120 frame
+    expect(R.levelWidths([28, 37, 21], 120)).toEqual([37, 37, 37]);
+    // only 4 spare at 98: the narrowest takes it
+    expect(R.levelWidths([28, 37, 21], 98)).toEqual([28, 37, 25]);
+    // no spare: unchanged, never narrowed
+    expect(R.levelWidths([28, 37, 21], 90)).toEqual([28, 37, 21]);
+  });
+
   test("rankTools merges MCP ids that shorten to the same label", () => {
     const byTool = new Map([
       ["Bash", 5],
@@ -410,6 +466,7 @@ describe("project periods", () => {
     expect(R.periodStarts(wed)).toEqual({
       week: "2026-07-20",
       month: "2026-07-01",
+      year: "2026-01-01",
     });
     // a Sunday belongs to the week that began the Monday before
     expect(R.periodStarts(new Date(2026, 6, 26, 12).getTime()).week).toBe(
@@ -544,6 +601,8 @@ describe("renderHistory", () => {
     for (const t of ["Top projects this week", "This month"])
       expect(stats).toContain(t);
     expect(stats).not.toContain("Overall"); // all-time is the Projects tab
+    for (const t of ["This year", "Activity", "tokens/day"])
+      expect(stats).toContain(t);
     expect(stats).not.toContain("Turns"); // the table lives on its own tab now
     const projects = renderHistory(h, 120, "projects", { now }).join("\n");
     expect(projects).toContain("Turns");

@@ -136,6 +136,7 @@ interface StatRow {
   label: string;
   value: string;
   pct?: string;
+  color?: string; // overrides the list's valueColor for this row
 }
 interface StatOpts {
   valueColor?: string;
@@ -161,7 +162,7 @@ function statRows(
   );
   const vc = opts.valueColor ?? "";
   return rows.map((r, i) => {
-    const value = `${vc}${pad(r.value, valueW, true)}${RESET}`;
+    const value = `${r.color ?? vc}${pad(r.value, valueW, true)}${RESET}`;
     const pct = pctW ? `  ${CYAN}${pad(r.pct ?? "", pctW, true)}${RESET}` : "";
     return `${pad(labels[i], labelW)}  ${value}${pct}`;
   });
@@ -348,6 +349,61 @@ function modelStats(h: History): StatList {
   return { title: "Models", rows, opts: { valueColor: GREEN } };
 }
 
+// Averages and peaks over the scanned days. The per-day rates divide by active
+// days (any turn), not calendar days, so a week off doesn't dilute them; the
+// streak counts consecutive active days back from today, or from yesterday
+// while today is still quiet.
+function activityStats(h: History, now: number): StatList {
+  const active = h.days.filter((d) => d.turns > 0);
+  const n = Math.max(1, active.length);
+  const busiest = active.reduce<DayBucket | null>(
+    (b, d) => (!b || dayTokens(d) > dayTokens(b) ? d : b),
+    null,
+  );
+  const timed = h.sessions.filter((s) => s.endTs > s.startTs);
+  const avgSec =
+    timed.reduce((t, s) => t + (s.endTs - s.startTs), 0) /
+    Math.max(1, timed.length) /
+    1000;
+  const today = new Date(now);
+  const yesterday = dateKey(
+    new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1),
+  );
+  let streak = 0;
+  const last = h.days.at(-1)?.date;
+  if (last === dateKey(today) || last === yesterday)
+    for (let i = h.days.length - 1; i >= 0 && h.days[i].turns > 0; i--)
+      streak++;
+  return {
+    title: "Activity",
+    rows: [
+      { label: "tokens/day", value: big(h.totals.tokens / n), color: GREEN },
+      { label: "turns/day", value: big(h.totals.turns / n) },
+      { label: "sessions/day", value: (h.totals.sessions / n).toFixed(1) },
+      { label: "avg session", value: formatDuration(avgSec) },
+      {
+        label: "busiest day",
+        value: busiest ? monthDay(busiest.date) : "-",
+      },
+      { label: "active days", value: `${active.length}/${h.days.length}` },
+      { label: "streak", value: `${streak}d` },
+    ],
+    opts: { valueColor: CYAN },
+  };
+}
+
+// The programs Bash tool calls ran most (see bashPrograms in the collector).
+function bashStats(h: History): StatList {
+  return {
+    title: "Bash",
+    rows: [...h.byBash.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, TOP_TOOLS)
+      .map(([label, n]) => ({ label, value: String(n) })),
+    opts: { valueColor: CYAN },
+  };
+}
+
 // Tool-use frequency, ranked separately for built-in tools and MCP tools so the
 // high-volume built-ins (Bash/Read/…) don't crowd the MCP tools out of a single
 // top-N — they answer different questions (how you work vs which integrations
@@ -410,9 +466,13 @@ function table<R>(cols: Col<R>[], rows: R[], width: number): string[] {
   ];
 }
 
-// The first day (YYYY-MM-DD, local) of the calendar week (Monday) and month
-// holding `now`, the lower bounds of the Stats tab's period lists.
-export function periodStarts(now: number): { week: string; month: string } {
+// The first day (YYYY-MM-DD, local) of the calendar week (Monday), month, and
+// year holding `now`, the lower bounds of the Stats tab's period lists.
+export function periodStarts(now: number): {
+  week: string;
+  month: string;
+  year: string;
+} {
   const d = new Date(now);
   const monday = new Date(
     d.getFullYear(),
@@ -422,6 +482,7 @@ export function periodStarts(now: number): { week: string; month: string } {
   return {
     week: dateKey(monday),
     month: dateKey(new Date(d.getFullYear(), d.getMonth(), 1)),
+    year: dateKey(new Date(d.getFullYear(), 0, 1)),
   };
 }
 
@@ -534,38 +595,81 @@ function tabBar(active: HistoryTab): string {
   ).join(" ");
 }
 
-// The Stats tab: token volume and model mix, then the top projects this week
-// and this month (all-time lives on the Projects tab), then tool and MCP use.
-// The six small lists pair up Tokens|Models, week|month, and Tools|MCP — each
-// column sized to its widest list (not half the frame) so the cards sit close
-// together, all three pairs sharing the column widths so they line up, and
-// every list's values flush with its column's right edge. They stack only when
-// even content-sized columns wouldn't fit side by side.
+// Share the frame's spare width out over the columns, one cell at a time to
+// the narrowest, so a content-tight column doesn't sit cramped beside wider
+// ones. Stops once the columns are even (it never stretches past the widest)
+// or the spare runs out; never narrows a column.
+function levelWidths(widths: number[], W: number): number[] {
+  const out = [...widths];
+  let spare = W - out.reduce((a, b) => a + b, 0) - COL_GAP * (out.length - 1);
+  for (; spare > 0; spare--) {
+    const min = Math.min(...out);
+    if (out.every((w) => w === min)) break;
+    out[out.indexOf(min)]++;
+  }
+  return out;
+}
+
+// The Stats tab: three rows of small lists — Tokens|Models|Activity, the top
+// projects this week|month|year (all-time lives on the Projects tab), and
+// Tools|MCP|Bash. Each column is sized to its widest list (not a fraction of
+// the frame) so the cards sit close together, every row sharing the column
+// widths so they line up, and each list's values sit flush with its column's
+// right edge; spare frame width evens the columns out (levelWidths). When
+// three columns don't fit, each row's third list wraps below the other two;
+// below two columns, all stack in row order.
 function statsTab(h: History, W: number, now: number): string[] {
-  const { week, month } = periodStarts(now);
-  const pairs: [StatList, StatList][] = [
-    [tokenStats(h), modelStats(h)],
+  const { week, month, year } = periodStarts(now);
+  const grid: StatList[][] = [
+    [tokenStats(h), modelStats(h), activityStats(h, now)],
     [
       periodStats(h, "Top projects this week", week),
       periodStats(h, "This month", month),
+      periodStats(h, "This year", year),
     ],
-    [toolStats(h, false), toolStats(h, true)],
+    [toolStats(h, false), toolStats(h, true), bashStats(h)],
   ];
-  const colW = (side: 0 | 1) =>
-    Math.max(
-      ...pairs.map((p) => blockW(p[side].title, renderList(p[side], W))),
-    );
-  const leftW = colW(0);
-  const rightW = colW(1);
-  const twoColumn = leftW + COL_GAP + rightW <= W;
+  const natural = (l: StatList) => blockW(l.title, renderList(l, W));
+  const colW = (c: number) => Math.max(...grid.map((r) => natural(r[c])));
+  const card = (l: StatList, w: number) =>
+    section(l.title, renderList(l, W, w), w);
 
-  const out: string[] = [];
-  for (const [l, r] of pairs) {
-    const ls = section(l.title, renderList(l, W, leftW), leftW);
-    const rs = section(r.title, renderList(r, W, rightW), rightW);
-    if (twoColumn) out.push(...twoCol(ls, rs, leftW), "");
-    else for (const x of [ls, rs]) if (x.length) out.push(...x, "");
-  }
+  // lay out rows of lists side by side at the given column widths
+  const rowsOut = (rows: StatList[][], widths: number[]) => {
+    const out: string[] = [];
+    for (const row of rows) {
+      let lines: string[] = [];
+      let x = 0;
+      row.forEach((l, i) => {
+        lines = i
+          ? twoCol(lines, card(l, widths[i]), x - COL_GAP)
+          : card(l, widths[i]);
+        x += widths[i] + COL_GAP;
+      });
+      if (lines.length) out.push(...lines, "");
+    }
+    return out;
+  };
+
+  const widths = [0, 1, 2].map(colW);
+  const fits = (ws: number[]) =>
+    ws.reduce((a, b) => a + b, 0) + COL_GAP * (ws.length - 1) <= W;
+  // two columns: each row's third list wraps under its first, so a row's
+  // lists stay together (Activity right below Tokens|Models, not paired off
+  // with This year at the end)
+  const two = [Math.max(widths[0], widths[2]), widths[1]];
+  let out: string[];
+  if (fits(widths)) out = rowsOut(grid, levelWidths(widths, W));
+  else if (fits(two))
+    out = rowsOut(
+      grid.flatMap((r) => [r.slice(0, 2), r.slice(2)]),
+      levelWidths(two, W),
+    );
+  else
+    out = rowsOut(
+      grid.flat().map((l) => [l]),
+      [Math.min(W, Math.max(...grid.flat().map(natural)))],
+    );
   out.pop(); // no trailing blank after the last section
   return out;
 }
@@ -636,6 +740,7 @@ export function renderHistory(
 
 // Exported for tests only.
 export const __test = {
+  levelWidths,
   big,
   barEighths,
   shortTool,

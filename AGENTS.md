@@ -146,9 +146,9 @@ per-session list (sub-agent transcripts fold onto their session via the shared
 write — the read-only contract holds). Sub-agent turns (which are `isSidechain`)
 count toward tokens/turns but not the session tally; session files skip their own
 inline sidechain turns to avoid double counting. The view has three tabs (`↹`):
-Stats (token/model/tool composition plus the top projects this week and this
-month), Projects (the per-project table), and Sessions (the
-recent-session table). The scan is fired on open and on `r` (rescan), never on the
+Stats (token/model/tool/Bash composition, activity averages, and the top
+projects this week, month, and year), Projects (the per-project table), and
+Sessions (the recent-session table). The scan is fired on open and on `r` (rescan), never on the
 refresh timer.
 
 Two cross-cutting rules worth knowing before you read the code. A Claude session
