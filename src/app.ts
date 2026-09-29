@@ -10,6 +10,7 @@ import { selfStamp } from "./binary.ts";
 import {
   collectHistory,
   collectRows,
+  dateKey,
   type History,
   type Instance,
   matchRow,
@@ -69,8 +70,9 @@ interface State {
   detailScroll: number; // first visible line (detail)
   detailRow: Instance | null; // last-known snapshot of the session in detail view
   detailEnded: boolean; // that session has disappeared from the live set
-  history: History | null; // aggregated history, scanned on first open then cached
+  history: History | null; // aggregated history, rescanned on open and every minute
   historyLoading: boolean; // a full-scan is in flight (first open or rescan)
+  historyScannedAt: number; // when the last scan finished (ms), 0 before any
   historyScroll: number; // first visible line (history)
   historyTab: HistoryTab; // active history tab (stats | projects | sessions)
   message: string | null;
@@ -107,6 +109,11 @@ const SORTS: SortMode[] = [
 // vertical gaps in terminals that add line spacing (e.g. JetBrains/GoLand),
 // whereas a background color fills the leading, so the bar stays continuous
 // everywhere. Blue keeps it distinct from the green/red dots and cyan agents.
+// While the history view is open it rescans on this slow cadence (independent
+// of --watch, which may be seconds) and on a local date change, so the day
+// buckets and this-week/month/year windows never go stale under the viewer.
+const HISTORY_REFRESH_MS = 60_000;
+
 const SELBAR = `${BLUE_BG} ${RESET} `; // left bar marking the selected group
 const GUTTER = "  "; // matching width for unselected rows + header
 
@@ -142,6 +149,7 @@ export async function runApp(opts: AppOptions): Promise<void> {
     detailEnded: false,
     history: null,
     historyLoading: false,
+    historyScannedAt: 0,
     historyScroll: 0,
     historyTab: HISTORY_TABS[0],
     message: null,
@@ -286,17 +294,21 @@ export async function runApp(opts: AppOptions): Promise<void> {
   };
 
   // Full-scan every transcript and aggregate the history. Kept off the refresh
-  // timer (it reads the whole corpus); fired on first open and on an explicit
-  // rescan (r). The per-file cache in collectHistory makes a rescan cheap. The
-  // previous result stays on screen while a rescan runs, so the view never
-  // blanks. Read-only — nothing here writes to disk.
+  // timer (it reads the whole corpus); fired on every open, on an explicit
+  // rescan (r), and — only while the view is open — every HISTORY_REFRESH_MS
+  // and on a date change. The Stats tab's week/month/year windows are computed
+  // from the clock, so a scan cached across a Monday would show "no activity"
+  // for the new week. The per-file cache in collectHistory makes a rescan cheap
+  // (unchanged transcripts are reused; live ones are re-parsed). The previous result stays on screen while a rescan
+  // runs, so the view never blanks. Read-only — nothing here writes to disk.
   let historyScanning = false;
-  const loadHistory = async () => {
+  const loadHistory = async (announce = true) => {
     if (historyScanning) return;
-    // A rescan keeps the prior frame up (no centered "Scanning…" note), so flash
-    // status in the footer to confirm it actually ran — the cached scan is fast
-    // and the data may look unchanged.
-    const rescan = state.history !== null;
+    // An explicit rescan keeps the prior frame up (no centered "Scanning…"
+    // note), so flash status in the footer to confirm it actually ran — the
+    // cached scan is fast and the data may look unchanged. The silent refreshes
+    // (reopen, background tick) need no confirmation.
+    const rescan = announce && state.history !== null;
     historyScanning = true;
     state.historyLoading = true;
     if (rescan) flash("rescanning transcripts…");
@@ -312,6 +324,9 @@ export async function runApp(opts: AppOptions): Promise<void> {
     } finally {
       historyScanning = false;
       state.historyLoading = false;
+      // stamped on failure too, so a broken scan retries a minute later rather
+      // than on every tick
+      state.historyScannedAt = Date.now();
     }
     draw();
   };
@@ -497,7 +512,7 @@ export async function runApp(opts: AppOptions): Promise<void> {
       case "h":
         state.mode = "history";
         state.historyScroll = 0;
-        if (!state.history) void loadHistory(); // first open: scan; else reuse cache
+        void loadHistory(false); // refresh on every open; prior scan shows meanwhile
         break;
       case "?":
         state.mode = "help";
@@ -1075,10 +1090,15 @@ export async function runApp(opts: AppOptions): Promise<void> {
             ? "session ended · ↑↓ scroll · esc back · q exit"
             : "↑↓ scroll · esc back · x quit · f free ports · q exit"
           : `↑↓ move · enter detail · / filter · s sort:${sort} · n notify:${state.notify ? "on" : "off"} · b goto bell · h history · x quit · ? help · q exit`;
-    // the history view doesn't auto-refresh, so drop the "every Ns · clock" part
+    // the history view rescans on its own slow cadence, not every --watch; its
+    // time is the last scan's, so it steps once a minute instead of ticking
     const left =
       state.mode === "history"
-        ? `${DIM}cctop/${opts.version}${RESET}`
+        ? `${DIM}cctop/${opts.version} · auto ${HISTORY_REFRESH_MS / 1000}s${
+            state.historyScannedAt
+              ? ` · ${clockTime(new Date(state.historyScannedAt))}`
+              : ""
+          }${RESET}`
         : `${DIM}cctop/${opts.version} · every ${opts.watchSecs}s · ${clockTime()}${RESET}`;
     const line = `${left}  ${DIM}·${RESET}  ${DIM}${hint}${RESET}`;
     return visLen(line) > cols
@@ -1095,7 +1115,17 @@ export async function runApp(opts: AppOptions): Promise<void> {
   // a lightweight clock/message tick so the footer time stays current and
   // flashes clear even between data refreshes
   setInterval(() => {
-    if (state.message && Date.now() > state.messageUntil) state.message = null;
+    const now = Date.now();
+    if (state.message && now > state.messageUntil) state.message = null;
+    // background history refresh, only while it's on screen (loadHistory
+    // drops the call when a scan is already in flight)
+    if (
+      state.mode === "history" &&
+      state.history &&
+      (now - state.historyScannedAt >= HISTORY_REFRESH_MS ||
+        dateKey(new Date(now)) !== dateKey(new Date(state.historyScannedAt)))
+    )
+      void loadHistory(false);
     draw();
   }, 1000);
 }
