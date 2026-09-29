@@ -64,7 +64,7 @@ import { parseUsage } from "./collect/usage.ts";
 import { cwdOf, listAllProcesses, listeningPorts } from "./proc.ts";
 
 export type { History } from "./collect/history.ts";
-export { collectHistory } from "./collect/history.ts";
+export { collectHistory, dateKey } from "./collect/history.ts";
 export type { NetRate } from "./collect/network.ts";
 export { netThroughput } from "./collect/network.ts";
 export type { Settings } from "./collect/settings.ts";

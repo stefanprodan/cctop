@@ -62,8 +62,7 @@ export function formatRate(bytesPerSec: number) {
 }
 
 // 24-hour HH:MM:SS, locale-independent
-export function clockTime() {
-  const d = new Date();
+export function clockTime(d = new Date()) {
   const p = (n: number) => String(n).padStart(2, "0");
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }

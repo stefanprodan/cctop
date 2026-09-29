@@ -148,8 +148,9 @@ count toward tokens/turns but not the session tally; session files skip their ow
 inline sidechain turns to avoid double counting. The view has three tabs (`↹`):
 Stats (token/model/tool/Bash composition, activity averages, and the top
 projects this week, month, and year), Projects (the per-project table), and
-Sessions (the recent-session table). The scan is fired on open and on `r` (rescan), never on the
-refresh timer.
+Sessions (the recent-session table). The scan is fired on open, on `r`
+(rescan), and — only while the view is open — every 60s and on a local date
+change (`HISTORY_REFRESH_MS` in `app.ts`); never on the main refresh timer.
 
 Two cross-cutting rules worth knowing before you read the code. A Claude session
 spawned by another Claude (a background job or sub-session) gets its own
