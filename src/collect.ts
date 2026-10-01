@@ -61,7 +61,7 @@ import {
 } from "./collect/transcript.ts";
 import type { Instance, InstanceBase, SubProc } from "./collect/types.ts";
 import { parseUsage } from "./collect/usage.ts";
-import { cwdOf, listAllProcesses, listeningPorts } from "./proc.ts";
+import { cwdOf, listAllProcesses, listeningPorts, type Proc } from "./proc.ts";
 
 export type { History } from "./collect/history.ts";
 export { collectHistory, dateKey } from "./collect/history.ts";
@@ -202,7 +202,7 @@ export async function collectRows(filter: string | null): Promise<Instance[]> {
   const childrenOf = indexChildren(procs);
 
   // drop samples of processes that left the table, so the map stays small;
-  // keep sessions and their sub-processes, both of which show a live %CPU
+  // keep sessions and their sub-process subtrees, all of which feed a live %CPU
   const current = new Set<number>();
   // for port attribution, a displayed sub-process should also surface the ports
   // of the descendants it spawned: subprocsOf shows the `npm run dev` wrapper
@@ -216,7 +216,10 @@ export async function collectRows(filter: string | null): Promise<Instance[]> {
       current.add(c.pid);
       const subtree = descendants(c.pid, childrenOf, candidatePids);
       childSubtree.set(c.pid, subtree);
-      for (const pid of subtree) portPids.add(pid);
+      for (const pid of subtree) {
+        portPids.add(pid);
+        current.add(pid);
+      }
     }
   }
   pruneCpuSamples(current);
@@ -231,6 +234,21 @@ export async function collectRows(filter: string | null): Promise<Instance[]> {
     for (const d of childSubtree.get(pid) ?? [pid])
       for (const port of portsByPid.get(d) ?? []) set.add(port);
     return [...set].sort((a, b) => a - b);
+  };
+  // the same roll-up for MEM/CPU: a displayed sub-process is often a thin
+  // launcher (`kiro-cli` → `kiro-cli-chat acp`, `npm` → node) whose own
+  // numbers are near zero while the descendants it spawned do the work.
+  // Every subtree pid is sampled each scan, so the CPU deltas stay live.
+  const usageFor = (c: Proc) => {
+    let mem = 0;
+    let cpu = 0;
+    for (const d of childSubtree.get(c.pid) ?? [c.pid]) {
+      const q = d === c.pid ? c : byPid.get(d);
+      if (!q) continue;
+      mem += q.rss;
+      cpu += cpuPercent(q, nowMs);
+    }
+    return { mem, cpu };
   };
 
   // Transcript reads can overlap across sessions, but sub-agent directory claims
@@ -265,12 +283,13 @@ export async function collectRows(filter: string | null): Promise<Instance[]> {
         details = await transcriptDetailsCached(transcript!, mtimeMs);
       const lastMs = Math.max(s?.updatedAt ?? 0, mtimeMs);
       const children = subprocsOf(p.pid, childrenOf, candidatePids)
-        .sort((a, b) => b.rss - a.rss || a.pid - b.pid)
-        .map((c) => ({
+        .map((c) => ({ c, ...usageFor(c) }))
+        .sort((a, b) => b.mem - a.mem || a.c.pid - b.c.pid)
+        .map(({ c, mem, cpu }) => ({
           pid: c.pid,
           name: c.name,
-          mem: c.rss,
-          cpu: cpuPercent(c, nowMs),
+          mem,
+          cpu,
           uptimeSec: c.startSec ? nowMs / 1000 - c.startSec : 0,
           ports: portsFor(c.pid),
           agent: isAgentCmd(c.name),
