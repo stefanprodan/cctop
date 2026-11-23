@@ -21,7 +21,7 @@ import {
   type Usage,
 } from "./collect.ts";
 import {
-  BLUE_BG,
+  BLUE,
   BOLD,
   CYAN,
   clockTime,
@@ -105,17 +105,22 @@ const SORTS: SortMode[] = [
   { name: "pid", cmp: (a, b) => a.pid - b.pid },
 ];
 
-// A solid blue background cell, not a ▌ half-block glyph: block glyphs leave
-// vertical gaps in terminals that add line spacing (e.g. JetBrains/GoLand),
-// whereas a background color fills the leading, so the bar stays continuous
-// everywhere. Blue keeps it distinct from the green/red dots and cyan agents.
 // While the history view is open it rescans on this slow cadence (independent
 // of --watch, which may be seconds) and on a local date change, so the day
 // buckets and this-week/month/year windows never go stale under the viewer.
 const HISTORY_REFRESH_MS = 60_000;
 
-const SELBAR = `${BLUE_BG} ${RESET} `; // left bar marking the selected group
-const GUTTER = "  "; // matching width for unselected rows + header
+// The selected session is marked by a blue ┃ in the gutter and a bold row,
+// with no background color: a colored edge cell gets stretched into the window
+// padding by libghostty terminals (Ghostty, Rex), and a tinted band fights
+// light/dark themes. ┃ is box drawing, which terminals draw to the full cell
+// height, unlike the ▌ block that left gaps under extra line spacing.
+const POINTER = ` ${BLUE}┃${RESET} `; // gutter of the selected session row
+const GUTTER = "   "; // matching width for every other row + header
+
+// Bold a styled row; its cells reset SGR mid-line, so re-assert after each.
+const emphasize = (line: string) =>
+  `${BOLD}${line.replace(/\x1b\[0?m/g, (m) => m + BOLD)}${RESET}`;
 
 export interface AppOptions {
   filter: string | null;
@@ -840,10 +845,10 @@ export async function runApp(opts: AppOptions): Promise<void> {
     const hasUp = top > 0;
     const hasDown = top + height < body.length;
     const innerH = height - (hasUp ? 1 : 0) - (hasDown ? 1 : 0);
-    if (hasUp) out.push(`${DIM}  ↑ ${top} more${RESET}`);
+    if (hasUp) out.push(`${DIM}${GUTTER}↑ ${top} more${RESET}`);
     out.push(...body.slice(top, top + innerH));
     if (hasDown)
-      out.push(`${DIM}  ↓ ${body.length - top - innerH} more${RESET}`);
+      out.push(`${DIM}${GUTTER}↓ ${body.length - top - innerH} more${RESET}`);
     while (out.length < height) out.push("");
     return { lines: out, scroll: top };
   }
@@ -900,7 +905,7 @@ export async function runApp(opts: AppOptions): Promise<void> {
   }
 
   // Window the session groups to `budget` lines, keeping the selected group
-  // visible, applying the selection bar, and adding scroll indicators.
+  // visible, marking the selected session, and adding scroll indicators.
   function windowGroups(
     groups: Group[],
     selIdx: number,
@@ -930,14 +935,18 @@ export async function runApp(opts: AppOptions): Promise<void> {
     state.scrollTop = top;
 
     const lines: string[] = [];
-    if (top > 0) lines.push(`${DIM}  ↑ ${top} more above${RESET}`);
+    if (top > 0) lines.push(`${DIM}${GUTTER}↑ ${top} more above${RESET}`);
     for (const i of idxs) {
       const selected = i === selIdx;
-      for (const line of groups[i].lines)
-        lines.push((selected ? SELBAR : GUTTER) + line);
+      groups[i].lines.forEach((line, j) => {
+        // only the session row itself; its sub-process/agent rows stay plain
+        lines.push(
+          selected && j === 0 ? POINTER + emphasize(line) : GUTTER + line,
+        );
+      });
     }
     const below = n - (idxs.length ? idxs[idxs.length - 1] + 1 : top);
-    if (below > 0) lines.push(`${DIM}  ↓ ${below} more below${RESET}`);
+    if (below > 0) lines.push(`${DIM}${GUTTER}↓ ${below} more below${RESET}`);
     while (lines.length < budget) lines.push("");
     return lines.slice(0, budget);
   }
@@ -959,7 +968,9 @@ export async function runApp(opts: AppOptions): Promise<void> {
     state.detailEnded = ended;
     const footer = GUTTER + footerLine(cols - GUTTER.length);
     const region = Math.max(termRows - 1, 1);
-    const body = renderDetail(row, cols - 2, ended).map((l) => `  ${l}`);
+    const body = renderDetail(row, cols - GUTTER.length, ended).map(
+      (l) => GUTTER + l,
+    );
     const clipped = clipLines(body, region, state.detailScroll);
     state.detailScroll = clipped.scroll;
     return [...clipped.lines, footer];
@@ -980,10 +991,15 @@ export async function runApp(opts: AppOptions): Promise<void> {
     // live session ids so the Sessions tab can show only ended ones
     const liveIds = new Set<string>();
     for (const r of state.rows) if (r.sessionId) liveIds.add(r.sessionId);
-    const body = renderHistory(state.history, cols - 2, state.historyTab, {
-      liveIds,
-      now: Date.now(),
-    }).map((l) => `  ${l}`);
+    const body = renderHistory(
+      state.history,
+      cols - GUTTER.length,
+      state.historyTab,
+      {
+        liveIds,
+        now: Date.now(),
+      },
+    ).map((l) => GUTTER + l);
     const clipped = clipLines(body, region, state.historyScroll);
     state.historyScroll = clipped.scroll;
     return [...clipped.lines, footer];
